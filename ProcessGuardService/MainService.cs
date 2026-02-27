@@ -395,23 +395,35 @@ namespace ProcessGuardService
         /// </summary>
         private void StartLogPipeServer()
         {
+            var noBom = new UTF8Encoding(false);
+
             while (_running)
             {
                 NamedPipeServerStream logPipe = null;
                 try
                 {
-                    var pipeSecurity = new PipeSecurity();
-                    pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                        PipeAccessRights.ReadWrite,
-                        AccessControlType.Allow));
+                    try
+                    {
+                        var pipeSecurity = new PipeSecurity();
+                        pipeSecurity.AddAccessRule(new PipeAccessRule(
+                            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                            PipeAccessRights.FullControl,
+                            AccessControlType.Allow));
 
-                    logPipe = new NamedPipeServerStream(Constants.PROCESS_GUARD_LOG_PIPE,
-                        PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-                        PipeOptions.None, 4096, 4096, pipeSecurity);
+                        logPipe = new NamedPipeServerStream(Constants.PROCESS_GUARD_LOG_PIPE,
+                            PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
+                            PipeTransmissionMode.Byte, PipeOptions.None, 4096, 4096, pipeSecurity);
+                    }
+                    catch
+                    {
+                        // Fallback: create without explicit security (matches config pipe pattern)
+                        logPipe = new NamedPipeServerStream(Constants.PROCESS_GUARD_LOG_PIPE,
+                            PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances);
+                    }
+
                     logPipe.WaitForConnection();
 
-                    var reader = new StreamReader(logPipe, Encoding.UTF8, false, 1024, true);
+                    var reader = new StreamReader(logPipe, noBom, false, 1024, true);
                     var configId = reader.ReadLine();
 
                     string logContent = string.Empty;
@@ -424,7 +436,7 @@ namespace ProcessGuardService
                         }
                     }
 
-                    var writer = new StreamWriter(logPipe, Encoding.UTF8, 1024, true);
+                    var writer = new StreamWriter(logPipe, noBom, 1024, true);
                     writer.Write(logContent);
                     writer.Flush();
                 }

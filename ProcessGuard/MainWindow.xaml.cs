@@ -536,17 +536,34 @@ namespace ProcessGuard
             {
                 await Task.Run(() =>
                 {
-                    using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
+                    var noBom = new System.Text.UTF8Encoding(false);
+                    Exception lastEx = null;
+
+                    for (int attempt = 0; attempt < 3; attempt++)
                     {
-                        client.Connect(3000);
+                        try
+                        {
+                            using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
+                            {
+                                client.Connect(3000);
 
-                        var writer = new StreamWriter(client, System.Text.Encoding.UTF8, 1024, true);
-                        writer.WriteLine(currentRow.Id);
-                        writer.Flush();
+                                var writer = new StreamWriter(client, noBom, 1024, true);
+                                writer.WriteLine(currentRow.Id);
+                                writer.Flush();
 
-                        var reader = new StreamReader(client, System.Text.Encoding.UTF8, false, 1024, true);
-                        logContent = reader.ReadToEnd();
+                                var reader = new StreamReader(client, noBom, false, 1024, true);
+                                logContent = reader.ReadToEnd();
+                                return;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            lastEx = ex;
+                            if (attempt < 2) System.Threading.Thread.Sleep(500);
+                        }
                     }
+
+                    throw lastEx ?? new Exception("Failed to connect");
                 });
             }
             catch (Exception)
