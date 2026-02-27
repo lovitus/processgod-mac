@@ -28,8 +28,23 @@
         public const string PROCESS_GUARD_LOG_PIPE = "ProcessGuardService_Logs";
 
         /// <summary>
-        /// TCP port for log retrieval (localhost only)
+        /// Fallback named pipe for log retrieval
         /// </summary>
-        public const int LOG_TCP_PORT = 39213;
+        public const string PROCESS_GUARD_LOG_PIPE_FALLBACK = "ProcessGuardService_Logs_Fallback";
+
+        /// <summary>
+        /// Shared memory map name prefix for log snapshots
+        /// </summary>
+        public const string PROCESS_GUARD_LOG_MMF_PREFIX = "Global\\ProcessGuardService_Logs_";
+
+        /// <summary>
+        /// Fallback shared memory map prefix for environments where Global namespace is unavailable
+        /// </summary>
+        public const string PROCESS_GUARD_LOG_MMF_PREFIX_FALLBACK = "Local\\ProcessGuardService_Logs_";
+
+        /// <summary>
+        /// Shared memory size for log snapshots (bytes)
+        /// </summary>
+        public const int PROCESS_GUARD_LOG_MMF_SIZE = 512 * 1024;
     }
 }

@@ -5,11 +5,12 @@ using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
@@ -24,7 +25,6 @@ namespace ProcessGuardService
 
         private Task _guardianTask = null;
         private NamedPipeServerStream _namedPipeServer = null;
-        private TcpListener _logTcpListener = null;
         private readonly ConcurrentDictionary<string, ConfigItemWithProcessId> _startedProcesses = new ConcurrentDictionary<string, ConfigItemWithProcessId>();
         private readonly ConcurrentDictionary<string, ConfigItemWithProcessId> _changedProcesses = new ConcurrentDictionary<string, ConfigItemWithProcessId>();
 
@@ -40,7 +40,8 @@ namespace ProcessGuardService
             _running = true;
             _guardianTask = Task.Factory.StartNew(StartGuardian, TaskCreationOptions.LongRunning);
             _ = Task.Factory.StartNew(StartNamedPipeServer, TaskCreationOptions.LongRunning);
-            _ = Task.Factory.StartNew(StartLogTcpServer, TaskCreationOptions.LongRunning);
+            _ = Task.Factory.StartNew(() => StartLogPipeServer(Constants.PROCESS_GUARD_LOG_PIPE, true), TaskCreationOptions.LongRunning);
+            _ = Task.Factory.StartNew(() => StartLogPipeServer(Constants.PROCESS_GUARD_LOG_PIPE_FALLBACK, false), TaskCreationOptions.LongRunning);
         }
 
         private void StartGuardian()
@@ -162,13 +163,14 @@ namespace ProcessGuardService
                     config.OutputReadPipe = outputReadPipe;
                     if (config.OutputBuffer == null)
                     {
-                        config.OutputBuffer = new CircularLineBuffer(5000);
+                        config.OutputBuffer = new CircularLineBuffer(1000);
                     }
 
                     // Start background thread to read output
                     var pipeHandle = outputReadPipe;
                     var buffer = config.OutputBuffer;
-                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer), TaskCreationOptions.LongRunning);
+                    var configId = config.Id;
+                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer, configId), TaskCreationOptions.LongRunning);
                 }
 
                 // Parse cron expression if present
@@ -195,10 +197,12 @@ namespace ProcessGuardService
         /// <summary>
         /// Read output from a pipe handle into a circular buffer (memory only)
         /// </summary>
-        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer)
+        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer, string configId)
         {
             try
             {
+                var batchCount = 0;
+                var totalCount = 0;
                 using (var stream = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(pipeHandle, true), FileAccess.Read))
                 using (var reader = new StreamReader(stream))
                 {
@@ -206,13 +210,151 @@ namespace ProcessGuardService
                     while ((line = reader.ReadLine()) != null)
                     {
                         buffer.AddLine(line);
+                        batchCount++;
+                        totalCount++;
+
+                        if (totalCount <= 5 || batchCount >= 20)
+                        {
+                            WriteSharedMemorySnapshot(configId, buffer.GetLastLines(1000));
+                            batchCount = 0;
+                        }
                     }
                 }
+
+                WriteSharedMemorySnapshot(configId, buffer.GetLastLines(1000));
             }
             catch (Exception)
             {
                 // Pipe closed or process exited
             }
+        }
+
+        private static string[] GetLogMapNames(string configId)
+        {
+            return new[]
+            {
+                Constants.PROCESS_GUARD_LOG_MMF_PREFIX + configId,
+                Constants.PROCESS_GUARD_LOG_MMF_PREFIX_FALLBACK + configId,
+            };
+        }
+
+        private void WriteSharedMemorySnapshot(string configId, string logContent)
+        {
+            if (string.IsNullOrEmpty(configId))
+                return;
+
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes(logContent ?? string.Empty);
+                var maxPayload = Constants.PROCESS_GUARD_LOG_MMF_SIZE - sizeof(int);
+                if (bytes.Length > maxPayload)
+                {
+                    var truncated = new byte[maxPayload];
+                    Buffer.BlockCopy(bytes, bytes.Length - maxPayload, truncated, 0, maxPayload);
+                    bytes = truncated;
+                }
+
+                foreach (var mapName in GetLogMapNames(configId))
+                {
+                    try
+                    {
+                        MemoryMappedFile mmf;
+
+                        try
+                        {
+                            var security = new MemoryMappedFileSecurity();
+                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
+                                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                                MemoryMappedFileRights.ReadWrite,
+                                AccessControlType.Allow));
+
+                            mmf = MemoryMappedFile.CreateOrOpen(
+                                mapName,
+                                Constants.PROCESS_GUARD_LOG_MMF_SIZE,
+                                MemoryMappedFileAccess.ReadWrite,
+                                MemoryMappedFileOptions.None,
+                                security,
+                                HandleInheritability.None);
+                        }
+                        catch
+                        {
+                            mmf = MemoryMappedFile.CreateOrOpen(mapName, Constants.PROCESS_GUARD_LOG_MMF_SIZE);
+                        }
+
+                        using (mmf)
+                        using (var view = mmf.CreateViewStream(0, Constants.PROCESS_GUARD_LOG_MMF_SIZE, MemoryMappedFileAccess.Write))
+                        using (var writer = new BinaryWriter(view, Encoding.UTF8, true))
+                        {
+                            writer.Write(bytes.Length);
+                            writer.Write(bytes);
+                            writer.Flush();
+                        }
+                    }
+                    catch
+                    {
+                        // try next map name
+                    }
+                }
+            }
+            catch
+            {
+                // Shared memory is best-effort fallback
+            }
+        }
+
+        private string ReadSharedMemorySnapshot(string configId)
+        {
+            if (string.IsNullOrEmpty(configId))
+                return string.Empty;
+
+            try
+            {
+                foreach (var mapName in GetLogMapNames(configId))
+                {
+                    try
+                    {
+                        using (var mmf = MemoryMappedFile.OpenExisting(mapName, MemoryMappedFileRights.Read))
+                        using (var view = mmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Read))
+                        using (var reader = new BinaryReader(view, Encoding.UTF8, true))
+                        {
+                            if (view.Length < sizeof(int))
+                                continue;
+
+                            var length = reader.ReadInt32();
+                            var maxPayload = Constants.PROCESS_GUARD_LOG_MMF_SIZE - sizeof(int);
+                            if (length <= 0 || length > maxPayload)
+                                continue;
+
+                            var bytes = reader.ReadBytes(length);
+                            return Encoding.UTF8.GetString(bytes);
+                        }
+                    }
+                    catch
+                    {
+                        // try next map name
+                    }
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return string.Empty;
+        }
+
+        private string GetLogSnapshot(string configId)
+        {
+            if (string.IsNullOrEmpty(configId))
+                return string.Empty;
+
+            ConfigItemWithProcessId process;
+            if (_startedProcesses.TryGetValue(configId, out process) && process.OutputBuffer != null)
+            {
+                return process.OutputBuffer.GetLastLines(1000);
+            }
+
+            return ReadSharedMemorySnapshot(configId);
         }
 
         /// <summary>
@@ -392,71 +534,85 @@ namespace ProcessGuardService
         }
 
         /// <summary>
-        /// TCP server on localhost for log retrieval (avoids named pipe ACL issues)
+        /// Named pipe server for log retrieval requests from the GUI.
+        /// Two instances are started with different pipe names for fallback.
         /// </summary>
-        private void StartLogTcpServer()
+        private void StartLogPipeServer(string pipeName, bool useWorldSecurity)
         {
+            var noBom = new UTF8Encoding(false);
+
             try
             {
-                _logTcpListener = new TcpListener(IPAddress.Loopback, Constants.LOG_TCP_PORT);
-                _logTcpListener.Start();
+                while (_running)
+                {
+                    NamedPipeServerStream logPipe = null;
+                    try
+                    {
+                        logPipe = CreateLogPipeServer(pipeName, useWorldSecurity);
+                        logPipe.WaitForConnection();
+
+                        var reader = new StreamReader(logPipe, noBom, false, 1024, true);
+                        var configId = reader.ReadLine();
+                        var logContent = GetLogSnapshot(configId);
+
+                        var writer = new StreamWriter(logPipe, noBom, 1024, true);
+                        writer.Write(logContent);
+                        writer.Flush();
+                    }
+                    catch
+                    {
+                        // continue listening on failures
+                    }
+                    finally
+                    {
+                        try { logPipe?.Dispose(); } catch { }
+                    }
+                }
             }
             catch
             {
-                return;
-            }
-
-            while (_running)
-            {
-                try
-                {
-                    var client = _logTcpListener.AcceptTcpClient();
-                    Task.Run(() => HandleLogTcpClient(client));
-                }
-                catch
-                {
-                    if (!_running) break;
-                }
+                // do nothing
             }
         }
 
-        private void HandleLogTcpClient(TcpClient client)
+        private NamedPipeServerStream CreateLogPipeServer(string pipeName, bool useWorldSecurity)
         {
-            var noBom = new UTF8Encoding(false);
-            try
+            if (useWorldSecurity)
             {
-                using (client)
+                try
                 {
-                    client.ReceiveTimeout = 5000;
-                    client.SendTimeout = 5000;
+                    var pipeSecurity = new PipeSecurity();
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(
+                        new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                        PipeAccessRights.FullControl,
+                        AccessControlType.Allow));
 
-                    var stream = client.GetStream();
-                    var reader = new StreamReader(stream, noBom);
-                    var configId = reader.ReadLine();
-
-                    string logContent = string.Empty;
-                    if (!string.IsNullOrEmpty(configId))
-                    {
-                        ConfigItemWithProcessId process;
-                        if (_startedProcesses.TryGetValue(configId, out process) && process.OutputBuffer != null)
-                        {
-                            logContent = process.OutputBuffer.GetLastLines(1000);
-                        }
-                    }
-
-                    var writer = new StreamWriter(stream, noBom);
-                    writer.Write(logContent);
-                    writer.Flush();
+                    return new NamedPipeServerStream(
+                        pipeName,
+                        PipeDirection.InOut,
+                        NamedPipeServerStream.MaxAllowedServerInstances,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.None,
+                        4096,
+                        4096,
+                        pipeSecurity);
+                }
+                catch
+                {
+                    // fallback to default constructor below
                 }
             }
-            catch { }
+
+            return new NamedPipeServerStream(
+                pipeName,
+                PipeDirection.InOut,
+                NamedPipeServerStream.MaxAllowedServerInstances);
         }
 
         protected override void OnStop()
         {
             _running = false;
             _namedPipeServer.Dispose();
-            try { _logTcpListener?.Stop(); } catch { }
             while (!_guardianTask.IsCompleted)
             {
                 Thread.Sleep(1);

@@ -6,6 +6,7 @@ using MahApps.Metro.Controls.Dialogs;
 using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.ServiceProcess;
 using System.Threading.Tasks;
 using System.Timers;
@@ -536,20 +537,20 @@ namespace ProcessGuard
             {
                 await Task.Run(() =>
                 {
-                    using (var client = new System.Net.Sockets.TcpClient("127.0.0.1", Constants.LOG_TCP_PORT))
+                    // Fallback chain (memory-only):
+                    // 1) Primary log pipe
+                    // 2) Fallback log pipe
+                    // 3) Shared memory snapshot
+                    logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE, currentRow.Id);
+
+                    if (string.IsNullOrEmpty(logContent))
                     {
-                        client.ReceiveTimeout = 5000;
-                        client.SendTimeout = 5000;
-                        var stream = client.GetStream();
-                        var noBom = new System.Text.UTF8Encoding(false);
+                        logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE_FALLBACK, currentRow.Id);
+                    }
 
-                        var writer = new StreamWriter(stream, noBom);
-                        writer.WriteLine(currentRow.Id);
-                        writer.Flush();
-                        client.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send);
-
-                        var reader = new StreamReader(stream, noBom);
-                        logContent = reader.ReadToEnd();
+                    if (string.IsNullOrEmpty(logContent))
+                    {
+                        logContent = TryReadLogViaSharedMemory(currentRow.Id);
                     }
                 });
             }
@@ -571,6 +572,79 @@ namespace ProcessGuard
                     AnimateHide = false,
                     MaximumBodyHeight = 500,
                 });
+        }
+
+        private static string TryReadLogViaPipe(string pipeName, string configId)
+        {
+            if (string.IsNullOrEmpty(pipeName) || string.IsNullOrEmpty(configId))
+                return string.Empty;
+
+            try
+            {
+                var noBom = new System.Text.UTF8Encoding(false);
+                using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut))
+                {
+                    client.Connect(1200);
+
+                    var writer = new StreamWriter(client, noBom, 1024, true);
+                    writer.WriteLine(configId);
+                    writer.Flush();
+
+                    var reader = new StreamReader(client, noBom, false, 1024, true);
+                    return reader.ReadToEnd();
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string TryReadLogViaSharedMemory(string configId)
+        {
+            if (string.IsNullOrEmpty(configId))
+                return string.Empty;
+
+            try
+            {
+                var mapNames = new[]
+                {
+                    Constants.PROCESS_GUARD_LOG_MMF_PREFIX + configId,
+                    Constants.PROCESS_GUARD_LOG_MMF_PREFIX_FALLBACK + configId,
+                };
+
+                foreach (var mapName in mapNames)
+                {
+                    try
+                    {
+                        using (var mmf = MemoryMappedFile.OpenExisting(mapName, MemoryMappedFileRights.Read))
+                        using (var view = mmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Read))
+                        using (var reader = new BinaryReader(view, System.Text.Encoding.UTF8, true))
+                        {
+                            if (view.Length < sizeof(int))
+                                continue;
+
+                            var length = reader.ReadInt32();
+                            var maxPayload = Constants.PROCESS_GUARD_LOG_MMF_SIZE - sizeof(int);
+                            if (length <= 0 || length > maxPayload)
+                                continue;
+
+                            var bytes = reader.ReadBytes(length);
+                            return System.Text.Encoding.UTF8.GetString(bytes);
+                        }
+                    }
+                    catch
+                    {
+                        // try next map
+                    }
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return string.Empty;
         }
 
         private void SetLanguageDictionary()
