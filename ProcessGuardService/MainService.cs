@@ -264,7 +264,19 @@ namespace ProcessGuardService
                         {
                             var security = new MemoryMappedFileSecurity();
                             security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
-                                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                                MemoryMappedFileRights.FullControl,
+                                AccessControlType.Allow));
+                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
+                                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                                MemoryMappedFileRights.FullControl,
+                                AccessControlType.Allow));
+                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
+                                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+                                MemoryMappedFileRights.ReadWrite,
+                                AccessControlType.Allow));
+                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
+                                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
                                 MemoryMappedFileRights.ReadWrite,
                                 AccessControlType.Allow));
 
@@ -583,9 +595,17 @@ namespace ProcessGuardService
                 {
                     var pipeSecurity = new PipeSecurity();
                     pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                        PipeAccessRights.FullControl,
-                        AccessControlType.Allow));
+                        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                        PipeAccessRights.FullControl, AccessControlType.Allow));
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(
+                        new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                        PipeAccessRights.FullControl, AccessControlType.Allow));
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(
+                        new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+                        PipeAccessRights.ReadWrite, AccessControlType.Allow));
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(
+                        new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                        PipeAccessRights.ReadWrite, AccessControlType.Allow));
 
                     return new NamedPipeServerStream(
                         pipeName,
@@ -599,7 +619,12 @@ namespace ProcessGuardService
                 }
                 catch
                 {
-                    // fallback to default constructor below
+                    // If complex ACL fails, still use InOut so client can read/write,
+                    // but it might inherit default SYSTEM ACL.
+                    return new NamedPipeServerStream(
+                        pipeName,
+                        PipeDirection.InOut,
+                        NamedPipeServerStream.MaxAllowedServerInstances);
                 }
             }
 
