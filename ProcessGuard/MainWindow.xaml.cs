@@ -532,41 +532,53 @@ namespace ProcessGuard
 
             string logContent = string.Empty;
 
+            // Primary: try named pipe IPC
             try
             {
                 await Task.Run(() =>
                 {
                     var noBom = new System.Text.UTF8Encoding(false);
-                    Exception lastEx = null;
-
-                    for (int attempt = 0; attempt < 3; attempt++)
+                    using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
                     {
-                        try
-                        {
-                            using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
-                            {
-                                client.Connect(3000);
-
-                                var writer = new StreamWriter(client, noBom, 1024, true);
-                                writer.WriteLine(currentRow.Id);
-                                writer.Flush();
-
-                                var reader = new StreamReader(client, noBom, false, 1024, true);
-                                logContent = reader.ReadToEnd();
-                                return;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            lastEx = ex;
-                            if (attempt < 2) System.Threading.Thread.Sleep(500);
-                        }
+                        client.Connect(2000);
+                        var writer = new StreamWriter(client, noBom, 1024, true);
+                        writer.WriteLine(currentRow.Id);
+                        writer.Flush();
+                        var reader = new StreamReader(client, noBom, false, 1024, true);
+                        logContent = reader.ReadToEnd();
                     }
-
-                    throw lastEx ?? new Exception("Failed to connect");
                 });
             }
-            catch (Exception)
+            catch { }
+
+            // Fallback: read from log file on disk
+            if (string.IsNullOrEmpty(logContent))
+            {
+                try
+                {
+                    await Task.Run(() =>
+                    {
+                        var logPath = ConfigHelper.GetLogFilePath(currentRow.Id);
+                        if (File.Exists(logPath))
+                        {
+                            using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                            using (var reader = new StreamReader(fs))
+                            {
+                                var allText = reader.ReadToEnd();
+                                var lines = allText.Split(new[] { '\n' }, StringSplitOptions.None);
+                                int skip = Math.Max(0, lines.Length - 1000);
+                                if (skip > 0)
+                                    logContent = string.Join("\n", lines.Skip(skip));
+                                else
+                                    logContent = allText;
+                            }
+                        }
+                    });
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(logContent))
             {
                 logContent = FindResource("LogRetrievalFailed").ToString();
             }

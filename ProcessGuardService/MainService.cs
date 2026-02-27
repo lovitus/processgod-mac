@@ -167,7 +167,8 @@ namespace ProcessGuardService
                     // Start background thread to read output
                     var pipeHandle = outputReadPipe;
                     var buffer = config.OutputBuffer;
-                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer), TaskCreationOptions.LongRunning);
+                    var configId = config.Id;
+                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer, configId), TaskCreationOptions.LongRunning);
                 }
 
                 // Parse cron expression if present
@@ -192,12 +193,18 @@ namespace ProcessGuardService
         }
 
         /// <summary>
-        /// Read output from a pipe handle into a circular buffer
+        /// Read output from a pipe handle into a circular buffer and log file
         /// </summary>
-        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer)
+        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer, string configId)
         {
+            StreamWriter fileWriter = null;
             try
             {
+                var logFilePath = ConfigHelper.GetLogFilePath(configId);
+                fileWriter = new StreamWriter(logFilePath, true, new UTF8Encoding(false));
+                fileWriter.AutoFlush = true;
+                int lineCount = 0;
+
                 using (var stream = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(pipeHandle, true), FileAccess.Read))
                 using (var reader = new StreamReader(stream))
                 {
@@ -205,12 +212,38 @@ namespace ProcessGuardService
                     while ((line = reader.ReadLine()) != null)
                     {
                         buffer.AddLine(line);
+                        try { fileWriter.WriteLine(line); } catch { }
+                        lineCount++;
+
+                        // Rotate log file when it exceeds 512KB
+                        if (lineCount % 500 == 0)
+                        {
+                            try
+                            {
+                                fileWriter.Flush();
+                                if (new FileInfo(logFilePath).Length > 512 * 1024)
+                                {
+                                    fileWriter.Close();
+                                    fileWriter = null;
+                                    File.Delete(logFilePath);
+                                    fileWriter = new StreamWriter(logFilePath, false, new UTF8Encoding(false));
+                                    fileWriter.AutoFlush = true;
+                                    fileWriter.Write(buffer.GetLastLines(1000));
+                                    fileWriter.Flush();
+                                }
+                            }
+                            catch { }
+                        }
                     }
                 }
             }
             catch (Exception)
             {
                 // Pipe closed or process exited
+            }
+            finally
+            {
+                try { fileWriter?.Dispose(); } catch { }
             }
         }
 
