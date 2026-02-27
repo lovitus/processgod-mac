@@ -178,6 +178,8 @@ namespace ProcessGuard
                 _mainWindowViewModel.IsMinimize = currentRow.Minimize;
                 _mainWindowViewModel.NoWindow = currentRow.NoWindow;
                 _mainWindowViewModel.Started = currentRow.Started;
+                _mainWindowViewModel.CronExpression = currentRow.CronExpression;
+                _mainWindowViewModel.StopBeforeCronExec = currentRow.StopBeforeCronExec;
                 _mainWindowViewModel.IsNew = false;
 
                 await this.ShowMetroDialogAsync(dialog);
@@ -481,6 +483,8 @@ namespace ProcessGuard
                             config.Minimize = _mainWindowViewModel.IsMinimize;
                             config.NoWindow = _mainWindowViewModel.NoWindow;
                             config.Started = _mainWindowViewModel.Started;
+                            config.CronExpression = _mainWindowViewModel.CronExpression;
+                            config.StopBeforeCronExec = _mainWindowViewModel.StopBeforeCronExec;
 
                             if (config.Started)
                             {
@@ -499,6 +503,8 @@ namespace ProcessGuard
                                 Minimize = _mainWindowViewModel.IsMinimize,
                                 NoWindow = _mainWindowViewModel.NoWindow,
                                 Started = _mainWindowViewModel.Started,
+                                CronExpression = _mainWindowViewModel.CronExpression,
+                                StopBeforeCronExec = _mainWindowViewModel.StopBeforeCronExec,
                             });
                         }
 
@@ -514,6 +520,51 @@ namespace ProcessGuard
                 default:
                     break;
             }
+        }
+
+        /// <summary>
+        /// View log button click handler for NoWindow processes
+        /// </summary>
+        private async void ViewLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            var currentRow = this.configDataGrid.CurrentItem as ConfigItem;
+            if (currentRow == null) return;
+
+            string logContent = string.Empty;
+
+            try
+            {
+                await Task.Run(() =>
+                {
+                    using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
+                    {
+                        client.Connect(3000);
+
+                        var writer = new StreamWriter(client, System.Text.Encoding.UTF8, 1024, true);
+                        writer.WriteLine(currentRow.Id);
+                        writer.Flush();
+
+                        var reader = new StreamReader(client, System.Text.Encoding.UTF8, false, 1024, true);
+                        logContent = reader.ReadToEnd();
+                    }
+                });
+            }
+            catch (Exception)
+            {
+                logContent = FindResource("LogRetrievalFailed").ToString();
+            }
+
+            await this.ShowMessageAsync(
+                string.Format(FindResource("LogTitle").ToString(), currentRow.ProcessName),
+                string.IsNullOrEmpty(logContent) ? FindResource("NoLogData").ToString() : logContent,
+                MessageDialogStyle.Affirmative,
+                new MetroDialogSettings
+                {
+                    AffirmativeButtonText = FindResource("OK").ToString(),
+                    AnimateShow = false,
+                    AnimateHide = false,
+                    MaximumBodyHeight = 500,
+                });
         }
 
         private void SetLanguageDictionary()

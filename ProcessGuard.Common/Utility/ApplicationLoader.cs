@@ -103,6 +103,15 @@ namespace ProcessGuard.Common.Utility
 
         #endregion
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bInheritHandle;
+        }
+
         #region Constants
 
         private const uint MAXIMUM_ALLOWED = 0x2000000;
@@ -111,6 +120,8 @@ namespace ProcessGuard.Common.Utility
         private const int CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const int NORMAL_PRIORITY_CLASS = 0x20;
         private const int STARTF_USESHOWWINDOW = 0x00000001;
+        private const int STARTF_USESTDHANDLES = 0x00000100;
+        private const int HANDLE_FLAG_INHERIT = 0x00000001;
 
         #endregion
 
@@ -148,6 +159,12 @@ namespace ProcessGuard.Common.Utility
         [DllImport("wtsapi32.dll", SetLastError = false)]
         public static extern void WTSFreeMemory(IntPtr memory);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CreatePipe(out IntPtr hReadPipe, out IntPtr hWritePipe, ref SECURITY_ATTRIBUTES lpPipeAttributes, uint nSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+
         #endregion
 
         /// <summary>
@@ -161,9 +178,17 @@ namespace ProcessGuard.Common.Utility
         /// <returns>创建完成的进程信息</returns>
         public static bool StartProcessInSession0(string applicationFullPath, string startingDir, out PROCESS_INFORMATION procInfo, bool minimize = false, string commandLine = null, bool noWindow = false)
         {
+            IntPtr dummy;
+            return StartProcessInSession0(applicationFullPath, startingDir, out procInfo, minimize, commandLine, noWindow, out dummy);
+        }
+
+        public static bool StartProcessInSession0(string applicationFullPath, string startingDir, out PROCESS_INFORMATION procInfo, bool minimize, string commandLine, bool noWindow, out IntPtr outputReadPipe)
+        {
             IntPtr hUserTokenDup = IntPtr.Zero;
             IntPtr hPToken = IntPtr.Zero;
             IntPtr pEnv = IntPtr.Zero;
+            IntPtr hWritePipe = IntPtr.Zero;
+            outputReadPipe = IntPtr.Zero;
             procInfo = new PROCESS_INFORMATION();
             bool result = false;
 
@@ -190,10 +215,36 @@ namespace ProcessGuard.Common.Utility
                 si.cb = (int)Marshal.SizeOf(si);
                 si.lpDesktop = @"winsta0\default";
 
+                bool inheritHandles = false;
+
                 if (minimize)
                 {
                     si.dwFlags = STARTF_USESHOWWINDOW;
                     si.wShowWindow = (short)SW.SW_MINIMIZE;
+                }
+
+                // For NoWindow processes, set up pipe redirection to capture output
+                if (noWindow)
+                {
+                    var saAttr = new SECURITY_ATTRIBUTES();
+                    saAttr.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+                    saAttr.bInheritHandle = true;
+                    saAttr.lpSecurityDescriptor = IntPtr.Zero;
+
+                    IntPtr hReadPipe;
+                    if (CreatePipe(out hReadPipe, out hWritePipe, ref saAttr, 0))
+                    {
+                        // Make read handle non-inheritable
+                        SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+                        si.dwFlags |= STARTF_USESTDHANDLES;
+                        si.hStdOutput = hWritePipe;
+                        si.hStdError = hWritePipe;
+                        si.hStdInput = IntPtr.Zero;
+
+                        outputReadPipe = hReadPipe;
+                        inheritHandles = true;
+                    }
                 }
 
                 // 指定进程的优先级和创建方法，这里代表是普通优先级，并且创建方法是带有UI的进程
@@ -211,7 +262,7 @@ namespace ProcessGuard.Common.Utility
                                                commandLine,            // 命令行内容
                                                IntPtr.Zero,            // 设置进程的SECURITY_ATTRIBUTES，主要用来控制对象的访问权限，这里传空值
                                                IntPtr.Zero,            // 设置线程的SECURITY_ATTRIBUTES，控制对象的访问权限，这里传空值
-                                               false,                  // 开启的进程不需继承句柄
+                                               inheritHandles,         // NoWindow进程需要继承管道句柄
                                                dwCreationFlags,        // 创建标识
                                                pEnv,                   // 新的环境变量
                                                startingDir,            // 程序启动时的工作目录，通常传递要启动的程序所在目录即可 
@@ -222,6 +273,12 @@ namespace ProcessGuard.Common.Utility
                 if (!result)
                 {
                     Debug.WriteLine(Marshal.GetLastWin32Error());
+                    // If process creation failed, close the read pipe
+                    if (outputReadPipe != IntPtr.Zero)
+                    {
+                        CloseHandle(outputReadPipe);
+                        outputReadPipe = IntPtr.Zero;
+                    }
                 }
             }
             finally
@@ -232,6 +289,11 @@ namespace ProcessGuard.Common.Utility
                 if (pEnv != IntPtr.Zero)
                 {
                     DestroyEnvironmentBlock(pEnv);
+                }
+                // Close write end of pipe in parent (child has its own copy)
+                if (hWritePipe != IntPtr.Zero)
+                {
+                    CloseHandle(hWritePipe);
                 }
                 CloseHandle(procInfo.hThread);
                 CloseHandle(procInfo.hProcess);

@@ -40,5 +40,12 @@
     <system:String x:Key="Yes">是的</system:String>
     <system:String x:Key="Required">参数是必填的！</system:String>
     <system:String x:Key="InvalidFilePath">文件路径无效！</system:String>
+    <system:String x:Key="CronExpression">定时计划</system:String>
+    <system:String x:Key="CronWatermark">例: */5 * * * * (每5分钟)</system:String>
+    <system:String x:Key="StopBeforeCron">执行前停止</system:String>
+    <system:String x:Key="ViewLog">查看输出日志</system:String>
+    <system:String x:Key="LogTitle">日志 - {0}</system:String>
+    <system:String x:Key="NoLogData">暂无日志数据。</system:String>
+    <system:String x:Key="LogRetrievalFailed">获取日志失败，服务是否正在运行？</system:String>
 
 </ResourceDictionary>

@@ -21,5 +21,10 @@
         /// 服务文件名
         /// </summary>
         public const string FILE_GUARD_SERVICE = "ProcessGuardService.exe";
+
+        /// <summary>
+        /// Named pipe for log retrieval
+        /// </summary>
+        public const string PROCESS_GUARD_LOG_PIPE = "ProcessGuardService_Logs";
     }
 }

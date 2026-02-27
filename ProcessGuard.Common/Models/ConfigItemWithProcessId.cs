@@ -1,4 +1,6 @@
 ﻿using System;
+using ProcessGuard.Common.Utility;
+using Newtonsoft.Json;
 
 namespace ProcessGuard.Common.Models
 {
@@ -13,6 +15,30 @@ namespace ProcessGuard.Common.Models
         /// The config change type
         /// </summary>
         public ChangeType ChangeType { get; set; }
+
+        /// <summary>
+        /// In-memory circular buffer for captured output (NoWindow processes)
+        /// </summary>
+        [JsonIgnore]
+        public CircularLineBuffer OutputBuffer { get; set; }
+
+        /// <summary>
+        /// The read end of the output pipe (NoWindow processes)
+        /// </summary>
+        [JsonIgnore]
+        public IntPtr OutputReadPipe { get; set; }
+
+        /// <summary>
+        /// Last cron execution time (to avoid duplicate triggers within same minute)
+        /// </summary>
+        [JsonIgnore]
+        public DateTime LastCronExecution { get; set; }
+
+        /// <summary>
+        /// Parsed cron instance (cached)
+        /// </summary>
+        [JsonIgnore]
+        public CronParser CronInstance { get; set; }
     }
 
     /// <summary>

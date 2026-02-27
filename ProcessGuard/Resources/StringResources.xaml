@@ -40,5 +40,12 @@
     <system:String x:Key="Yes">Yes</system:String>
     <system:String x:Key="Required">Value is required!</system:String>
     <system:String x:Key="InvalidFilePath">Invalid file path!</system:String>
+    <system:String x:Key="CronExpression">Cron Schedule</system:String>
+    <system:String x:Key="CronWatermark">e.g. */5 * * * * (every 5 min)</system:String>
+    <system:String x:Key="StopBeforeCron">Stop Before Cron</system:String>
+    <system:String x:Key="ViewLog">View output log</system:String>
+    <system:String x:Key="LogTitle">Log - {0}</system:String>
+    <system:String x:Key="NoLogData">No log data available.</system:String>
+    <system:String x:Key="LogRetrievalFailed">Failed to retrieve log. Is the service running?</system:String>
 
 </ResourceDictionary>

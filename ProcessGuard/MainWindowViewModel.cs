@@ -154,6 +154,28 @@ namespace ProcessGuard
             set { this.Set(ref this._isNew, value); }
         }
 
+        private string _cronExpression;
+
+        /// <summary>
+        /// Cron expression for scheduled execution
+        /// </summary>
+        public string CronExpression
+        {
+            get { return _cronExpression; }
+            set { this.Set(ref this._cronExpression, value); }
+        }
+
+        private bool _stopBeforeCronExec;
+
+        /// <summary>
+        /// Whether to stop the running process before cron-triggered execution
+        /// </summary>
+        public bool StopBeforeCronExec
+        {
+            get { return _stopBeforeCronExec; }
+            set { this.Set(ref this._stopBeforeCronExec, value); }
+        }
+
         private bool _canStart;
 
         /// <summary>
