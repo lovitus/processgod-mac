@@ -82,23 +82,5 @@ namespace ProcessGuard.Common.Utility
 
             return Path.Combine(folderPath, fileName);
         }
-
-        /// <summary>
-        /// Get the log file path for a specific config item
-        /// Log files are stored in C:\ProgramData\ProcessGuardService\logs\
-        /// </summary>
-        public static string GetLogFilePath(string configId)
-        {
-            var logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                Constants.PROCESS_GUARD_SERVICE, "logs");
-
-            if (!Directory.Exists(logDir))
-            {
-                Directory.CreateDirectory(logDir);
-            }
-
-            return Path.Combine(logDir, configId + ".log");
-        }
     }
 }

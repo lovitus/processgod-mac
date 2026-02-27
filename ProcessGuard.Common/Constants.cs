@@ -26,5 +26,10 @@
         /// Named pipe for log retrieval
         /// </summary>
         public const string PROCESS_GUARD_LOG_PIPE = "ProcessGuardService_Logs";
+
+        /// <summary>
+        /// TCP port for log retrieval (localhost only)
+        /// </summary>
+        public const int LOG_TCP_PORT = 39213;
     }
 }

@@ -532,51 +532,28 @@ namespace ProcessGuard
 
             string logContent = string.Empty;
 
-            // Primary: try named pipe IPC
             try
             {
                 await Task.Run(() =>
                 {
-                    var noBom = new System.Text.UTF8Encoding(false);
-                    using (var client = new NamedPipeClientStream(".", Constants.PROCESS_GUARD_LOG_PIPE, PipeDirection.InOut))
+                    using (var client = new System.Net.Sockets.TcpClient("127.0.0.1", Constants.LOG_TCP_PORT))
                     {
-                        client.Connect(2000);
-                        var writer = new StreamWriter(client, noBom, 1024, true);
+                        client.ReceiveTimeout = 5000;
+                        client.SendTimeout = 5000;
+                        var stream = client.GetStream();
+                        var noBom = new System.Text.UTF8Encoding(false);
+
+                        var writer = new StreamWriter(stream, noBom);
                         writer.WriteLine(currentRow.Id);
                         writer.Flush();
-                        var reader = new StreamReader(client, noBom, false, 1024, true);
+                        client.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send);
+
+                        var reader = new StreamReader(stream, noBom);
                         logContent = reader.ReadToEnd();
                     }
                 });
             }
             catch { }
-
-            // Fallback: read from log file on disk
-            if (string.IsNullOrEmpty(logContent))
-            {
-                try
-                {
-                    await Task.Run(() =>
-                    {
-                        var logPath = ConfigHelper.GetLogFilePath(currentRow.Id);
-                        if (File.Exists(logPath))
-                        {
-                            using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                            using (var reader = new StreamReader(fs))
-                            {
-                                var allText = reader.ReadToEnd();
-                                var lines = allText.Split(new[] { '\n' }, StringSplitOptions.None);
-                                int skip = Math.Max(0, lines.Length - 1000);
-                                if (skip > 0)
-                                    logContent = string.Join("\n", lines.Skip(skip));
-                                else
-                                    logContent = allText;
-                            }
-                        }
-                    });
-                }
-                catch { }
-            }
 
             if (string.IsNullOrEmpty(logContent))
             {

@@ -7,9 +7,9 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
@@ -24,6 +24,7 @@ namespace ProcessGuardService
 
         private Task _guardianTask = null;
         private NamedPipeServerStream _namedPipeServer = null;
+        private TcpListener _logTcpListener = null;
         private readonly ConcurrentDictionary<string, ConfigItemWithProcessId> _startedProcesses = new ConcurrentDictionary<string, ConfigItemWithProcessId>();
         private readonly ConcurrentDictionary<string, ConfigItemWithProcessId> _changedProcesses = new ConcurrentDictionary<string, ConfigItemWithProcessId>();
 
@@ -39,7 +40,7 @@ namespace ProcessGuardService
             _running = true;
             _guardianTask = Task.Factory.StartNew(StartGuardian, TaskCreationOptions.LongRunning);
             _ = Task.Factory.StartNew(StartNamedPipeServer, TaskCreationOptions.LongRunning);
-            _ = Task.Factory.StartNew(StartLogPipeServer, TaskCreationOptions.LongRunning);
+            _ = Task.Factory.StartNew(StartLogTcpServer, TaskCreationOptions.LongRunning);
         }
 
         private void StartGuardian()
@@ -167,8 +168,7 @@ namespace ProcessGuardService
                     // Start background thread to read output
                     var pipeHandle = outputReadPipe;
                     var buffer = config.OutputBuffer;
-                    var configId = config.Id;
-                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer, configId), TaskCreationOptions.LongRunning);
+                    Task.Factory.StartNew(() => ReadPipeOutput(pipeHandle, buffer), TaskCreationOptions.LongRunning);
                 }
 
                 // Parse cron expression if present
@@ -193,18 +193,12 @@ namespace ProcessGuardService
         }
 
         /// <summary>
-        /// Read output from a pipe handle into a circular buffer and log file
+        /// Read output from a pipe handle into a circular buffer (memory only)
         /// </summary>
-        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer, string configId)
+        private void ReadPipeOutput(IntPtr pipeHandle, CircularLineBuffer buffer)
         {
-            StreamWriter fileWriter = null;
             try
             {
-                var logFilePath = ConfigHelper.GetLogFilePath(configId);
-                fileWriter = new StreamWriter(logFilePath, true, new UTF8Encoding(false));
-                fileWriter.AutoFlush = true;
-                int lineCount = 0;
-
                 using (var stream = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(pipeHandle, true), FileAccess.Read))
                 using (var reader = new StreamReader(stream))
                 {
@@ -212,38 +206,12 @@ namespace ProcessGuardService
                     while ((line = reader.ReadLine()) != null)
                     {
                         buffer.AddLine(line);
-                        try { fileWriter.WriteLine(line); } catch { }
-                        lineCount++;
-
-                        // Rotate log file when it exceeds 512KB
-                        if (lineCount % 500 == 0)
-                        {
-                            try
-                            {
-                                fileWriter.Flush();
-                                if (new FileInfo(logFilePath).Length > 512 * 1024)
-                                {
-                                    fileWriter.Close();
-                                    fileWriter = null;
-                                    File.Delete(logFilePath);
-                                    fileWriter = new StreamWriter(logFilePath, false, new UTF8Encoding(false));
-                                    fileWriter.AutoFlush = true;
-                                    fileWriter.Write(buffer.GetLastLines(1000));
-                                    fileWriter.Flush();
-                                }
-                            }
-                            catch { }
-                        }
                     }
                 }
             }
             catch (Exception)
             {
                 // Pipe closed or process exited
-            }
-            finally
-            {
-                try { fileWriter?.Dispose(); } catch { }
             }
         }
 
@@ -424,39 +392,46 @@ namespace ProcessGuardService
         }
 
         /// <summary>
-        /// Named pipe server for log retrieval requests from the GUI
+        /// TCP server on localhost for log retrieval (avoids named pipe ACL issues)
         /// </summary>
-        private void StartLogPipeServer()
+        private void StartLogTcpServer()
         {
-            var noBom = new UTF8Encoding(false);
+            try
+            {
+                _logTcpListener = new TcpListener(IPAddress.Loopback, Constants.LOG_TCP_PORT);
+                _logTcpListener.Start();
+            }
+            catch
+            {
+                return;
+            }
 
             while (_running)
             {
-                NamedPipeServerStream logPipe = null;
                 try
                 {
-                    try
-                    {
-                        var pipeSecurity = new PipeSecurity();
-                        pipeSecurity.AddAccessRule(new PipeAccessRule(
-                            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                            PipeAccessRights.FullControl,
-                            AccessControlType.Allow));
+                    var client = _logTcpListener.AcceptTcpClient();
+                    Task.Run(() => HandleLogTcpClient(client));
+                }
+                catch
+                {
+                    if (!_running) break;
+                }
+            }
+        }
 
-                        logPipe = new NamedPipeServerStream(Constants.PROCESS_GUARD_LOG_PIPE,
-                            PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
-                            PipeTransmissionMode.Byte, PipeOptions.None, 4096, 4096, pipeSecurity);
-                    }
-                    catch
-                    {
-                        // Fallback: create without explicit security (matches config pipe pattern)
-                        logPipe = new NamedPipeServerStream(Constants.PROCESS_GUARD_LOG_PIPE,
-                            PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances);
-                    }
+        private void HandleLogTcpClient(TcpClient client)
+        {
+            var noBom = new UTF8Encoding(false);
+            try
+            {
+                using (client)
+                {
+                    client.ReceiveTimeout = 5000;
+                    client.SendTimeout = 5000;
 
-                    logPipe.WaitForConnection();
-
-                    var reader = new StreamReader(logPipe, noBom, false, 1024, true);
+                    var stream = client.GetStream();
+                    var reader = new StreamReader(stream, noBom);
                     var configId = reader.ReadLine();
 
                     string logContent = string.Empty;
@@ -469,25 +444,19 @@ namespace ProcessGuardService
                         }
                     }
 
-                    var writer = new StreamWriter(logPipe, noBom, 1024, true);
+                    var writer = new StreamWriter(stream, noBom);
                     writer.Write(logContent);
                     writer.Flush();
                 }
-                catch (Exception)
-                {
-                    // Connection error, continue listening
-                }
-                finally
-                {
-                    try { logPipe?.Dispose(); } catch { }
-                }
             }
+            catch { }
         }
 
         protected override void OnStop()
         {
             _running = false;
             _namedPipeServer.Dispose();
+            try { _logTcpListener?.Stop(); } catch { }
             while (!_guardianTask.IsCompleted)
             {
                 Thread.Sleep(1);
