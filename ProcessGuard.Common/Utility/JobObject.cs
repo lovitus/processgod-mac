@@ -39,7 +39,7 @@ namespace ProcessGuard.Common.Utility
                 Marshal.StructureToPtr(info, extendedInfoPtr, false);
                 if (!SetInformationJobObject(handle, JobObjectInfoType.ExtendedLimitInformation, extendedInfoPtr, (uint)length))
                 {
-                    throw new Exception($"Unable to set information.  Error: {Marshal.GetLastWin32Error()}");
+                    throw new Exception(string.Format("Unable to set information.  Error: {0}", Marshal.GetLastWin32Error()));
                 }
             }
             finally
@@ -51,11 +51,11 @@ namespace ProcessGuard.Common.Utility
         public void AddProcess(IntPtr processHandle)
         {
             if (disposed)
-                throw new ObjectDisposedException(nameof(JobObject));
+                throw new ObjectDisposedException("JobObject");
 
             if (!AssignProcessToJobObject(handle, processHandle))
             {
-                throw new Exception($"Unable to add the process to job. Error: {Marshal.GetLastWin32Error()}");
+                throw new Exception(string.Format("Unable to add the process to job. Error: {0}", Marshal.GetLastWin32Error()));
             }
         }
 

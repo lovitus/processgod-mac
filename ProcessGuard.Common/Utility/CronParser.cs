@@ -87,7 +87,7 @@ namespace ProcessGuard.Common.Utility
                 {
                     int step;
                     if (!int.TryParse(trimmed.Substring(2), out step) || step <= 0)
-                        throw new ArgumentException($"Invalid step value in: {field}");
+                        throw new ArgumentException(string.Format("Invalid step value in: {0}", field));
                     for (int i = min; i <= max; i += step)
                         result.Add(i);
                 }
@@ -95,12 +95,12 @@ namespace ProcessGuard.Common.Utility
                 {
                     var rangeParts = trimmed.Split('-');
                     if (rangeParts.Length != 2)
-                        throw new ArgumentException($"Invalid range in: {field}");
+                        throw new ArgumentException(string.Format("Invalid range in: {0}", field));
                     int start, end;
                     if (!int.TryParse(rangeParts[0], out start) || !int.TryParse(rangeParts[1], out end))
-                        throw new ArgumentException($"Invalid range values in: {field}");
+                        throw new ArgumentException(string.Format("Invalid range values in: {0}", field));
                     if (start < min || end > max || start > end)
-                        throw new ArgumentException($"Range out of bounds in: {field}");
+                        throw new ArgumentException(string.Format("Range out of bounds in: {0}", field));
                     for (int i = start; i <= end; i++)
                         result.Add(i);
                 }
@@ -108,9 +108,9 @@ namespace ProcessGuard.Common.Utility
                 {
                     int value;
                     if (!int.TryParse(trimmed, out value))
-                        throw new ArgumentException($"Invalid value in: {field}");
+                        throw new ArgumentException(string.Format("Invalid value in: {0}", field));
                     if (value < min || value > max)
-                        throw new ArgumentException($"Value {value} out of range [{min}-{max}] in: {field}");
+                        throw new ArgumentException(string.Format("Value {0} out of range [{1}-{2}] in: {3}", value, min, max, field));
                     result.Add(value);
                 }
             }

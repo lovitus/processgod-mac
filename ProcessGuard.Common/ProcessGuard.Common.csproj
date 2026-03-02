@@ -57,6 +57,7 @@
     <Compile Include="Utility\CircularLineBuffer.cs" />
     <Compile Include="Utility\ConfigHelper.cs" />
     <Compile Include="Utility\CronParser.cs" />
+    <Compile Include="Utility\JobObject.cs" />
     <Compile Include="Utility\Extensions.cs" />
     <Compile Include="Utility\StringUtil.cs" />
   </ItemGroup>
