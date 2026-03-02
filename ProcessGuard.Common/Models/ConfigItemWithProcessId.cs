@@ -39,6 +39,12 @@ namespace ProcessGuard.Common.Models
         /// </summary>
         [JsonIgnore]
         public CronParser CronInstance { get; set; }
+
+        /// <summary>
+        /// JobObject instance used to kill the entire process tree on stop.
+        /// </summary>
+        [JsonIgnore]
+        public JobObject JobInstance { get; set; }
     }
 
     /// <summary>

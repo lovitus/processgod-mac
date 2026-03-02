@@ -362,3 +362,6 @@ MigrationBackup/
 FodyWeavers.xsd
 ProcessGuard/Resources/ProcessGuardService.exe
 ProcessGuard/Resources/ProcessGuardService.exe
+ProcessGuard/Resources/ProcessGuardService.exe
+task.md
+Memory-Only Log Retrieval Fix.md

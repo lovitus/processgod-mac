@@ -70,7 +70,12 @@ namespace ProcessGuardService
                         }
                         catch (Exception)
                         {
-                            // The process has not started, should be restarted
+                            // The process has exited, should be restarted
+                            if (config.JobInstance != null)
+                            {
+                                config.JobInstance.Dispose();
+                                config.JobInstance = null;
+                            }
                             config.ProcessId = 0;
                         }
                     }
@@ -99,9 +104,17 @@ namespace ProcessGuardService
                             _startedProcesses.TryGetValue(changeInfo.Key, out var startedProcess);
                             if (startedProcess != null && startedProcess.ProcessId > 0)
                             {
-                                using (var process = Process.GetProcessById(startedProcess.ProcessId))
+                                if (startedProcess.JobInstance != null)
                                 {
-                                    process.Kill();
+                                    startedProcess.JobInstance.Dispose();
+                                    startedProcess.JobInstance = null;
+                                }
+                                else
+                                {
+                                    using (var process = Process.GetProcessById(startedProcess.ProcessId))
+                                    {
+                                        process.Kill();
+                                    }
                                 }
                             }
                         }
@@ -153,6 +166,23 @@ namespace ProcessGuardService
             if (processInfo.dwProcessId > 0)
             {
                 config.ProcessId = (int)processInfo.dwProcessId;
+
+                try
+                {
+                    config.JobInstance = new JobObject();
+                    using (var process = Process.GetProcessById(config.ProcessId))
+                    {
+                        config.JobInstance.AddProcess(process.Handle);
+                    }
+                }
+                catch (Exception)
+                {
+                    if (config.JobInstance != null)
+                    {
+                        config.JobInstance.Dispose();
+                        config.JobInstance = null;
+                    }
+                }
 
                 // Set up output capture for NoWindow processes
                 if (config.NoWindow && outputReadPipe != IntPtr.Zero)
@@ -427,9 +457,17 @@ namespace ProcessGuardService
                 {
                     try
                     {
-                        using (var process = Process.GetProcessById(config.ProcessId))
+                        if (config.JobInstance != null)
                         {
-                            process.Kill();
+                            config.JobInstance.Dispose();
+                            config.JobInstance = null;
+                        }
+                        else
+                        {
+                            using (var process = Process.GetProcessById(config.ProcessId))
+                            {
+                                process.Kill();
+                            }
                         }
                     }
                     catch (Exception) { }
