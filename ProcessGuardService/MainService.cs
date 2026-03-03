@@ -42,6 +42,7 @@ namespace ProcessGuardService
             _ = Task.Factory.StartNew(StartNamedPipeServer, TaskCreationOptions.LongRunning);
             _ = Task.Factory.StartNew(() => StartLogPipeServer(Constants.PROCESS_GUARD_LOG_PIPE, true), TaskCreationOptions.LongRunning);
             _ = Task.Factory.StartNew(() => StartLogPipeServer(Constants.PROCESS_GUARD_LOG_PIPE_FALLBACK, false), TaskCreationOptions.LongRunning);
+            _ = Task.Factory.StartNew(StartUdpLogServer, TaskCreationOptions.LongRunning);
         }
 
         private void StartGuardian()
@@ -293,22 +294,8 @@ namespace ProcessGuardService
                         try
                         {
                             var security = new MemoryMappedFileSecurity();
-                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
-                                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                                MemoryMappedFileRights.FullControl,
-                                AccessControlType.Allow));
-                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
-                                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                                MemoryMappedFileRights.FullControl,
-                                AccessControlType.Allow));
-                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
-                                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-                                MemoryMappedFileRights.ReadWrite,
-                                AccessControlType.Allow));
-                            security.AddAccessRule(new AccessRule<MemoryMappedFileRights>(
-                                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                                MemoryMappedFileRights.ReadWrite,
-                                AccessControlType.Allow));
+                            // S:(ML;;NW;;;LW) -> Low Mandatory Integrity, D:(A;;0x12019f;;;WD) -> Everyone Full Control
+                            security.SetSecurityDescriptorSddlForm("S:(ML;;NW;;;LW)D:(A;;0x12019f;;;WD)");
 
                             mmf = MemoryMappedFile.CreateOrOpen(
                                 mapName,
@@ -632,18 +619,8 @@ namespace ProcessGuardService
                 try
                 {
                     var pipeSecurity = new PipeSecurity();
-                    pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                        PipeAccessRights.FullControl, AccessControlType.Allow));
-                    pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                        PipeAccessRights.FullControl, AccessControlType.Allow));
-                    pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-                        PipeAccessRights.ReadWrite, AccessControlType.Allow));
-                    pipeSecurity.AddAccessRule(new PipeAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                        PipeAccessRights.ReadWrite, AccessControlType.Allow));
+                    // S:(ML;;NW;;;LW) -> Low Mandatory Integrity, D:(A;;0x12019f;;;WD) -> Everyone Full Control
+                    pipeSecurity.SetSecurityDescriptorSddlForm("S:(ML;;NW;;;LW)D:(A;;0x12019f;;;WD)");
 
                     return new NamedPipeServerStream(
                         pipeName,
@@ -679,6 +656,58 @@ namespace ProcessGuardService
             while (!_guardianTask.IsCompleted)
             {
                 Thread.Sleep(1);
+            }
+        }
+
+        /// <summary>
+        /// Ultimate Log Retrieval Fallback over Local UDP
+        /// </summary>
+        private void StartUdpLogServer()
+        {
+            try
+            {
+                using (var udpClient = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 49888)))
+                {
+                    udpClient.Client.ReceiveTimeout = 2000;
+                    while (_running)
+                    {
+                        try
+                        {
+                            if (udpClient.Available > 0)
+                            {
+                                System.Net.IPEndPoint remoteEP = null;
+                                byte[] received = udpClient.Receive(ref remoteEP);
+                                if (received != null && received.Length > 0)
+                                {
+                                    var configId = Encoding.UTF8.GetString(received).Trim();
+                                    var logContent = GetLogSnapshot(configId);
+                                    var bytesToSend = Encoding.UTF8.GetBytes(logContent ?? string.Empty);
+                                    
+                                    // Truncate to avoid UDP max packet size issues (60000 bytes).
+                                    if (bytesToSend.Length > 60000)
+                                    {
+                                        var truncated = new byte[60000];
+                                        Buffer.BlockCopy(bytesToSend, bytesToSend.Length - 60000, truncated, 0, 60000);
+                                        bytesToSend = truncated;
+                                    }
+                                    
+                                    udpClient.Send(bytesToSend, bytesToSend.Length, remoteEP);
+                                }
+                            }
+                            else
+                            {
+                                Thread.Sleep(100);
+                            }
+                        }
+                        catch (System.Net.Sockets.SocketException) { }
+                        catch (System.TimeoutException) { }
+                        catch { }
+                    }
+                }
+            }
+            catch
+            {
+                // do nothing on binding fail
             }
         }
     }

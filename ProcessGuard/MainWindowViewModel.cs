@@ -104,6 +104,8 @@ namespace ProcessGuard
             set { this.Set(ref this._selectedProcessName, value); }
         }
 
+        public bool IsCronEnabled => !IsOnlyOpenOnce;
+
         private bool _isOnlyOpenOnce;
 
         /// <summary>
@@ -112,7 +114,23 @@ namespace ProcessGuard
         public bool IsOnlyOpenOnce
         {
             get { return _isOnlyOpenOnce; }
-            set { this.Set(ref this._isOnlyOpenOnce, value); }
+            set 
+            { 
+                this.Set(ref this._isOnlyOpenOnce, value); 
+                this.OnPropertyChanged(nameof(IsCronEnabled));
+
+                if (value)
+                {
+                    CronExpression = "disabled due Start Once";
+                }
+                else
+                {
+                    if (CronExpression == "disabled due Start Once" || string.IsNullOrWhiteSpace(CronExpression))
+                    {
+                        CronExpression = "0 1 * * *";
+                    }
+                }
+            }
         }
 
         private bool _isMinimize;
@@ -278,6 +296,16 @@ namespace ProcessGuard
                         if (string.IsNullOrWhiteSpace(SeletedProcessName))
                         {
                             return Application.Current.FindResource("Required").ToString();
+                        }
+                        break;
+
+                    case nameof(CronExpression):
+                        if (!IsOnlyOpenOnce && !string.IsNullOrWhiteSpace(CronExpression))
+                        {
+                            if (!ProcessGuard.Common.Utility.CronParser.TryParse(CronExpression, out _))
+                            {
+                                return "Invalid Cron Expression";
+                            }
                         }
                         break;
 

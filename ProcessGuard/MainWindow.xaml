@@ -109,13 +109,15 @@
                              Grid.Column="1"
                              Grid.ColumnSpan="3"
                              mah:TextBoxHelper.Watermark="{DynamicResource CronWatermark}"
+                             IsEnabled="{Binding IsCronEnabled}"
                              Text="{Binding CronExpression,
-                                            UpdateSourceTrigger=PropertyChanged}"
+                                            ValidatesOnDataErrors=True,
+                                            UpdateSourceTrigger=PropertyChanged,
+                                            NotifyOnValidationError=True}"
                              Style="{DynamicResource MahApps.Styles.TextBox}" 
                              VerticalAlignment="Center">
                     </TextBox>
-                    <TextBlock Margin="0 16 0 0" Grid.Row="7" VerticalAlignment="Center" HorizontalAlignment="Right" Text="{DynamicResource StopBeforeCron}" />
-                    <CheckBox Margin="10 16 0 0" Grid.Row="7" Grid.Column="1" IsChecked="{Binding StopBeforeCronExec}" Style="{DynamicResource MahApps.Styles.CheckBox}"></CheckBox>
+                    <TextBlock Margin="10 16 10 0" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="4" VerticalAlignment="Center" HorizontalAlignment="Left" TextWrapping="Wrap" Opacity="0.7" Text="process get killed when cron is triggered, (cron use as restart, by default, restart it at 1am everyday)" />
                     <Button x:Name="btnConfirmAdd" Margin="10" Grid.Row="8" Grid.Column="2" 
                             HorizontalAlignment="Right" 
                             Width="80" 

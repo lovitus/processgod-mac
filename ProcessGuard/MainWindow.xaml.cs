@@ -4,6 +4,7 @@ using ProcessGuard.Common.Utility;
 using MahApps.Metro.Controls;
 using MahApps.Metro.Controls.Dialogs;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.IO.MemoryMappedFiles;
@@ -76,6 +77,13 @@ namespace ProcessGuard
                 case nameof(btnAdd):
                     var dialog = new CustomDialog(this.MetroDialogOptions) { Content = this.Resources["CustomAddDialog"], Title = string.Empty };
                     _mainWindowViewModel.SelectedId = Guid.NewGuid().ToString("N");
+                    _mainWindowViewModel.SelectedFile = string.Empty;
+                    _mainWindowViewModel.SeletedProcessName = string.Empty;
+                    _mainWindowViewModel.StartupParams = string.Empty;
+                    _mainWindowViewModel.IsOnlyOpenOnce = false;
+                    _mainWindowViewModel.IsMinimize = false;
+                    _mainWindowViewModel.NoWindow = false;
+                    _mainWindowViewModel.CronExpression = "0 1 * * *";
                     _mainWindowViewModel.Started = false;
                     _mainWindowViewModel.IsNew = true;
 
@@ -179,8 +187,8 @@ namespace ProcessGuard
                 _mainWindowViewModel.IsMinimize = currentRow.Minimize;
                 _mainWindowViewModel.NoWindow = currentRow.NoWindow;
                 _mainWindowViewModel.Started = currentRow.Started;
-                _mainWindowViewModel.CronExpression = currentRow.CronExpression;
-                _mainWindowViewModel.StopBeforeCronExec = currentRow.StopBeforeCronExec;
+                _mainWindowViewModel.CronExpression = currentRow.OnlyOpenOnce ? "disabled due Start Once" : (string.IsNullOrWhiteSpace(currentRow.CronExpression) ? "0 1 * * *" : currentRow.CronExpression);
+                _mainWindowViewModel.StopBeforeCronExec = true;
                 _mainWindowViewModel.IsNew = false;
 
                 await this.ShowMetroDialogAsync(dialog);
@@ -301,10 +309,15 @@ namespace ProcessGuard
         {
             var serviceFileName = ConfigHelper.GetAppDataFilePath(Constants.FILE_GUARD_SERVICE);
 
-            // 从资源文件中拷贝出服务程序
-            if (!File.Exists(serviceFileName))
+            // 从资源文件中拷贝出核心守护服务程序，如存在则强制覆盖更新版本
+            try
             {
                 File.WriteAllBytes(serviceFileName, Properties.Resources.ProcessGuardService);
+            }
+            catch
+            {
+                // 若文件被占用 (正在运行)，覆盖可能失败。此时先忽略。
+                // 推荐用户在点击"卸载服务"且服务彻底终止后再安装，才能覆盖最新版。
             }
         }
 
@@ -484,8 +497,8 @@ namespace ProcessGuard
                             config.Minimize = _mainWindowViewModel.IsMinimize;
                             config.NoWindow = _mainWindowViewModel.NoWindow;
                             config.Started = _mainWindowViewModel.Started;
-                            config.CronExpression = _mainWindowViewModel.CronExpression;
-                            config.StopBeforeCronExec = _mainWindowViewModel.StopBeforeCronExec;
+                            config.CronExpression = _mainWindowViewModel.IsOnlyOpenOnce || _mainWindowViewModel.CronExpression == "disabled due Start Once" ? string.Empty : _mainWindowViewModel.CronExpression;
+                            config.StopBeforeCronExec = true;
 
                             if (config.Started)
                             {
@@ -504,8 +517,8 @@ namespace ProcessGuard
                                 Minimize = _mainWindowViewModel.IsMinimize,
                                 NoWindow = _mainWindowViewModel.NoWindow,
                                 Started = _mainWindowViewModel.Started,
-                                CronExpression = _mainWindowViewModel.CronExpression,
-                                StopBeforeCronExec = _mainWindowViewModel.StopBeforeCronExec,
+                                CronExpression = _mainWindowViewModel.IsOnlyOpenOnce || _mainWindowViewModel.CronExpression == "disabled due Start Once" ? string.Empty : _mainWindowViewModel.CronExpression,
+                                StopBeforeCronExec = true,
                             });
                         }
 
@@ -532,6 +545,7 @@ namespace ProcessGuard
             if (currentRow == null) return;
 
             string logContent = string.Empty;
+            List<string> errorLogs = new List<string>();
 
             try
             {
@@ -539,26 +553,36 @@ namespace ProcessGuard
                 {
                     // Fallback chain (memory-only):
                     // 1) Primary log pipe
-                    // 2) Fallback log pipe
-                    // 3) Shared memory snapshot
-                    logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE, currentRow.Id);
+                    logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE, currentRow.Id, out string err1);
+                    if (!string.IsNullOrEmpty(err1)) errorLogs.Add($"[Pipe Primary Error] {err1}");
 
                     if (string.IsNullOrEmpty(logContent))
                     {
-                        logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE_FALLBACK, currentRow.Id);
+                        logContent = TryReadLogViaPipe(Constants.PROCESS_GUARD_LOG_PIPE_FALLBACK, currentRow.Id, out string err2);
+                        if (!string.IsNullOrEmpty(err2)) errorLogs.Add($"[Pipe Fallback Error] {err2}");
                     }
 
                     if (string.IsNullOrEmpty(logContent))
                     {
-                        logContent = TryReadLogViaSharedMemory(currentRow.Id);
+                        logContent = TryReadLogViaSharedMemory(currentRow.Id, out string err3);
+                        if (!string.IsNullOrEmpty(err3)) errorLogs.Add($"[MMF Error] {err3}");
+                    }
+
+                    if (string.IsNullOrEmpty(logContent))
+                    {
+                        logContent = TryReadLogViaUdp(currentRow.Id, out string err4);
+                        if (!string.IsNullOrEmpty(err4)) errorLogs.Add($"[UDP Error] {err4}");
                     }
                 });
             }
-            catch { }
+            catch (Exception ex)
+            {
+                errorLogs.Add($"[Outer Exception] {ex.Message}");
+            }
 
             if (string.IsNullOrEmpty(logContent))
             {
-                logContent = FindResource("LogRetrievalFailed").ToString();
+                logContent = FindResource("LogRetrievalFailed").ToString() + "\n\n--- Debug Information ---\n" + string.Join("\n", errorLogs);
             }
 
             await this.ShowMessageAsync(
@@ -574,8 +598,40 @@ namespace ProcessGuard
                 });
         }
 
-        private static string TryReadLogViaPipe(string pipeName, string configId)
+        private static string TryReadLogViaUdp(string configId, out string error)
         {
+            error = string.Empty;
+            if (string.IsNullOrEmpty(configId)) return string.Empty;
+
+            try
+            {
+                using (var udpClient = new System.Net.Sockets.UdpClient())
+                {
+                    udpClient.Client.ReceiveTimeout = 2000;
+                    udpClient.Connect(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 49888));
+                    
+                    var bytesToSend = System.Text.Encoding.UTF8.GetBytes(configId);
+                    udpClient.Send(bytesToSend, bytesToSend.Length);
+
+                    System.Net.IPEndPoint remoteEP = null;
+                    byte[] received = udpClient.Receive(ref remoteEP);
+                    if (received != null && received.Length > 0)
+                    {
+                        return System.Text.Encoding.UTF8.GetString(received);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+
+            return string.Empty;
+        }
+
+        private static string TryReadLogViaPipe(string pipeName, string configId, out string error)
+        {
+            error = string.Empty;
             if (string.IsNullOrEmpty(pipeName) || string.IsNullOrEmpty(configId))
                 return string.Empty;
 
@@ -594,14 +650,16 @@ namespace ProcessGuard
                     return reader.ReadToEnd();
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                error = ex.Message;
                 return string.Empty;
             }
         }
 
-        private static string TryReadLogViaSharedMemory(string configId)
+        private static string TryReadLogViaSharedMemory(string configId, out string error)
         {
+            error = string.Empty;
             if (string.IsNullOrEmpty(configId))
                 return string.Empty;
 
@@ -633,15 +691,15 @@ namespace ProcessGuard
                             return System.Text.Encoding.UTF8.GetString(bytes);
                         }
                     }
-                    catch
+                    catch (Exception loopEx)
                     {
-                        // try next map
+                        error = loopEx.Message;
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                error = ex.Message;
             }
 
             return string.Empty;

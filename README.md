@@ -4,6 +4,10 @@
 
 About how it works:
 
+> ⚠️ **Important Note: Cron vs Start Once**
+> - **Start Once (Checked)**: The `Cron` expression is **disabled**. The program will only be launched exactly once when the service starts (or is added). It will never be restarted, and its lifecycle is completely ignored afterwards.
+> - **Start Once (Unchecked)**: The `Cron` expression becomes active. **When a cron is triggered, the existing process tree is killed and restarted.** By default, `0 1 * * *` will restart the process every day at 1 AM.
+
 [Subverting Vista UAC in Both 32 and 64 bit Architectures By Pero Matić](https://www.codeproject.com/Articles/35773/Subverting-Vista-UAC-in-Both-32-and-64-bit-Archite)
 
 [Application Compatibility - Session 0 Isolation By Craig Marcho](https://techcommunity.microsoft.com/t5/ask-the-performance-team/application-compatibility-session-0-isolation/ba-p/372361)
