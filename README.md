@@ -1,57 +1,126 @@
-# ProcessGuard
+# ProcessGod macOS
 
-## [中文文档](README-zh.md)
+macOS-native rewrite of `lovitus/processgod`.
 
-About how it works:
+This version is implemented in Go and focuses on service-style process guarding on macOS:
 
-> ⚠️ **Important Note: Cron vs Start Once**
-> - **Start Once (Checked)**: The `Cron` expression is **disabled**. The program will only be launched exactly once when the service starts (or is added). It will never be restarted, and its lifecycle is completely ignored afterwards.
-> - **Start Once (Unchecked)**: The `Cron` expression becomes active. **When a cron is triggered, the existing process tree is killed and restarted.** By default, `0 1 * * *` will restart the process every day at 1 AM.
+- launchd service mode (user LaunchAgent and system LaunchDaemon)
+- boot startup support in `--system` mode
+- process auto-restart guard
+- cron-triggered restart/run behavior
+- in-memory log ring cache per guarded process
+- CLI status/log inspection and live config reload
 
-[Subverting Vista UAC in Both 32 and 64 bit Architectures By Pero Matić](https://www.codeproject.com/Articles/35773/Subverting-Vista-UAC-in-Both-32-and-64-bit-Archite)
+## Build
 
-[Application Compatibility - Session 0 Isolation By Craig Marcho](https://techcommunity.microsoft.com/t5/ask-the-performance-team/application-compatibility-session-0-isolation/ba-p/372361)
+```bash
+mkdir -p /tmp/gocache /tmp/gomodcache
+GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac ./cmd/processgod
+```
 
-With the ability to start a process from the Windows service, we can:
+## Run Daemon
 
-1. Start a program with an interactive interface from a Windows service and restart it after it has been closed
-2. Set some programs to start automatically at boot
-3. For console applications, including but not limited to `java`, `dotnet`, `node`, etc., they can be deployed on Windows systems as no window like Windows services
+```bash
+./dist/processgod-mac daemon
+```
 
-## ⚙Configuration Interface
+## Service Mode (launchd)
 
-> You can download the program directly from the [Release](https://github.com/KamenRiderKuuga/ProcessGuard/releases) page. The interface you see is just a configuration interface for configuring the processes to be guarded here. After starting the service, you can close the configuration interface
+User mode (starts at user login):
 
-![](https://lambda.cyou/assets/img/processguard-5.PNG)
+```bash
+./dist/processgod-mac service install
+./dist/processgod-mac service status
+```
 
-Note: The configuration can take effect only after the service is started
+System mode (starts on boot, requires sudo):
 
+```bash
+sudo ./dist/processgod-mac service install --system
+sudo ./dist/processgod-mac service status --system
+```
 
+Other operations:
 
-## 📕Configuration Items
+```bash
+./dist/processgod-mac service start [--system]
+./dist/processgod-mac service stop [--system]
+./dist/processgod-mac service uninstall [--system]
+```
 
-**Process Name:** The name used to identify the current configuration item, only used for interface display
+## Config
 
-**Full Path:** Full path to executable
+Config file path:
 
-**Parameters:** The parameters be carried when starting the application, ignore this if you do not need any parameters
+```bash
+./dist/processgod-mac config path
+```
 
-**Start Once:** Only started once during the service running
+Write a sample:
 
-**Minimize:** For programs with an interactive interface, it can make it minimized to the taskbar when it starts, instead of popping up the interface as usual
+```bash
+./dist/processgod-mac config sample
+```
 
-**NoWindow:** For console applications, enabling this item can make it start like a windows service, without displaying the console at all
+Validate config:
 
+```bash
+./dist/processgod-mac config validate
+```
 
+Default path is `~/Library/Application Support/ProcessGodMac/config.json`.
 
-## Configuration Example
+For sandboxed/dev environments, you can override with:
 
-### An Interactive Program
+```bash
+export PROCESSGOD_HOME=/path/to/runtime-dir
+```
 
-![](https://lambda.cyou/assets/img/processguard-6.PNG)
+## Runtime Commands
 
+```bash
+./dist/processgod-mac reload
+./dist/processgod-mac status
+./dist/processgod-mac logs <id> --lines 200
+```
 
+## Cron Semantics
 
-### A Spring Boot Program
+Equivalent behavior to original ProcessGuard:
 
-![](https://lambda.cyou/assets/img/processguard-7.PNG)
+- `onlyOpenOnce=true`: process starts once and is not restarted after exit.
+- `cronExpression` set and `stopBeforeCronExec=false`: cron runs task when trigger matches; if process exits, it stays stopped until next cron trigger.
+- `cronExpression` set and `stopBeforeCronExec=true`: process is guarded continuously and cron trigger forces restart (kill+start) once per matching minute.
+
+## Packaging DMG
+
+```bash
+./scripts/package-dmg.sh 0.1.0 dev
+```
+
+Output naming format:
+
+- `processgod-mac-<version>-<channel>.dmg`
+- example: `processgod-mac-0.1.0-dev.dmg`
+
+## Config Schema
+
+```json
+{
+  "items": [
+    {
+      "id": "sample-echo",
+      "processName": "Sample Echo",
+      "execPath": "/bin/sh",
+      "args": ["-lc", "while true; do date; sleep 5; done"],
+      "workingDir": "/tmp",
+      "env": { "JAVA_HOME": "/opt/homebrew/opt/openjdk" },
+      "started": true,
+      "onlyOpenOnce": false,
+      "noWindow": true,
+      "cronExpression": "0 1 * * *",
+      "stopBeforeCronExec": true
+    }
+  ]
+}
+```

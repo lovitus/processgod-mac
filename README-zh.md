@@ -1,53 +1,63 @@
-# ProcessGuard
+# ProcessGod macOS 版本
 
-## [English](README.md)
+这是 `lovitus/processgod` 的 macOS 重写版（Go 实现）。
 
-关于实现的具体依据请查看[通过Windows系统服务守护进程的运行](https://lambda.cyou/posts/Tips-5/)
+主要能力：
 
-> ⚠️ **重要提示: Cron 定时任务与“仅启动一次”**
-> - **勾选“仅启动一次”**：此时 `Cron` 表达式将会被**禁用**。程序仅在服务启动时被拉起一次，属于即用即弃型任务，后续无论崩溃或是长期运行，底层守护服务都不再对其做任何干预和监控。
-> - **未勾选“仅启动一次”**：`Cron` 表达式生效。**当 Cron 触发时，旧的进程将会被强制结束并重新启动新实例。** 默认值为 `0 1 * * *`（每天凌晨 1 点重启）。
+- launchd 服务模式（LaunchAgent / LaunchDaemon）
+- `--system` 模式支持开机启动
+- 进程守护与自动拉起
+- cron 定时触发重启/执行
+- 进程输出内存环形缓存（不落盘）
+- CLI 查看状态、拉取日志、热重载配置
 
-得益于能从Windows系统服务中启动任意进程的能力，围绕这个能力，此程序可以用来：
+## 构建
 
-1. 从Windows系统服务启动带交互界面的程序，并在其被关闭后再次将其启动
-2. 将一些程序配置为开机自启
-3. 对于控制台类型的应用，包括但不限于`java`，`dotnet`，`node`等类型的程序，可以通过无窗应用的启动方式，将其像系统服务一样部署在Windows系统上
+```bash
+mkdir -p /tmp/gocache /tmp/gomodcache
+GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac ./cmd/processgod
+```
 
-## ⚙配置界面
+## 运行守护进程
 
-> 从[Release](https://github.com/KamenRiderKuuga/ProcessGuard/releases)页面可以直接下载程序，启动程序后看到的界面只是一个配置界面，可以在这里配置要守护的进程，启动服务之后可以随时开启或关闭此配置界面
+```bash
+./dist/processgod-mac daemon
+```
 
-![](https://lambda.cyou/assets/img/processguard-8.PNG)
+## 服务模式
 
-注：只有在界面点击启动服务，守护服务正常运行后，配置才能生效
+用户级（登录后启动）：
 
+```bash
+./dist/processgod-mac service install
+```
 
+系统级（开机启动，需要 sudo）：
 
-## 📕配置说明
+```bash
+sudo ./dist/processgod-mac service install --system
+```
 
-**进程名称：** 用于标识当前配置项的名称，仅用于界面显示
+## 配置文件
 
-**完整路径：** 可执行文件的完整路径
+```bash
+./dist/processgod-mac config path
+./dist/processgod-mac config sample
+./dist/processgod-mac config validate
+```
 
-**启动参数：** 也就是平时启动应用时携带的参数，如不需要携带参数可忽略此项
+默认路径：`~/Library/Application Support/ProcessGodMac/config.json`
 
-**仅启动一次：** 在守护服务运行期间只启动一次，用于只需要配置开机启动的场景
+如在沙箱/受限环境运行，可设置：
 
-**最小化：** 对于有交互界面的程序，配置此项可以让其启动时最小化到任务栏，而不是和平时一样弹出界面
+```bash
+export PROCESSGOD_HOME=/path/to/runtime-dir
+```
 
-**无窗应用：** 用于控制台类型的应用，对于这些没有交互界面的应用，勾选此项可以让其启动时完全不显示控制台，而作为系统服务启动
+## DMG 打包
 
+```bash
+./scripts/package-dmg.sh 0.1.0 dev
+```
 
-
-## 配置示例
-
-### 带交互界面的程序
-
-![](https://lambda.cyou/assets/img/processguard-9.PNG)
-
-
-
-### Spring Boot项目
-
-![](https://lambda.cyou/assets/img/processguard-10.PNG)
+输出示例：`processgod-mac-0.1.0-dev.dmg`
