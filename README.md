@@ -99,6 +99,8 @@ Dashboard provides original-app equivalent config workflow:
 - start/stop daemon
 - reload config
 - view per-item in-memory logs
+- quick-add guided form for non-technical users
+- command-name support via PATH lookup (e.g. `ping`, `node`, `java`)
 
 ## Cron Semantics
 

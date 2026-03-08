@@ -6,10 +6,12 @@ import (
 	"html/template"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/lovitus/processgod-mac/internal/config"
 	"github.com/lovitus/processgod-mac/internal/daemonctl"
@@ -25,6 +27,13 @@ type Server struct {
 	WorkDir     string
 }
 
+type row struct {
+	Item   config.Item
+	Status guardian.Status
+	Has    bool
+	Mode   string
+}
+
 func (s *Server) Run(openBrowser bool) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
@@ -33,7 +42,7 @@ func (s *Server) Run(openBrowser bool) error {
 
 	if openBrowser {
 		go func() {
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(250 * time.Millisecond)
 			_ = exec.Command("open", "http://"+s.Addr).Run()
 		}()
 	}
@@ -49,16 +58,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	editID := strings.TrimSpace(r.URL.Query().Get("edit"))
-	edit := config.Item{
-		ID:                 "",
-		ProcessName:        "",
-		ExecPath:           "",
-		StartupParams:      "",
-		WorkingDir:         "",
-		Started:            true,
-		StopBeforeCronExec: true,
-		CronExpression:     "0 1 * * *",
-	}
+	edit := config.Item{Started: true, StopBeforeCronExec: true, CronExpression: "0 1 * * *"}
 	if editID != "" {
 		for _, it := range cfg.Items {
 			if it.ID == editID {
@@ -75,15 +75,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(cfg.Items, func(i, j int) bool { return cfg.Items[i].ID < cfg.Items[j].ID })
-	type row struct {
-		Item   config.Item
-		Status guardian.Status
-		Has    bool
-	}
 	rows := make([]row, 0, len(cfg.Items))
 	for _, it := range cfg.Items {
 		st, ok := statusByID[it.ID]
-		rows = append(rows, row{Item: it, Status: st, Has: ok})
+		rows = append(rows, row{Item: it, Status: st, Has: ok, Mode: modeLabel(it)})
 	}
 
 	data := struct {
@@ -92,6 +87,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Online    bool
 		StatusErr string
 		FlashErr  string
+		FlashOK   string
 		Addr      string
 		CfgPath   string
 	}{
@@ -100,6 +96,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Online:    online,
 		StatusErr: statusErr,
 		FlashErr:  strings.TrimSpace(r.URL.Query().Get("error")),
+		FlashOK:   strings.TrimSpace(r.URL.Query().Get("ok")),
 		Addr:      s.ControlAddr,
 		CfgPath:   s.ConfigPath,
 	}
@@ -117,8 +114,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	lines := 200
 	if n := strings.TrimSpace(r.URL.Query().Get("lines")); n != "" {
-		v, err := strconv.Atoi(n)
-		if err == nil && v > 0 {
+		if v, err := strconv.Atoi(n); err == nil && v > 0 {
 			lines = v
 		}
 	}
@@ -144,25 +140,30 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
 	var err error
+	okMsg := "saved"
 
 	switch action {
 	case "start-daemon":
 		err = daemonctl.EnsureRunning(s.ControlAddr, s.ExePath, s.WorkDir)
+		okMsg = "daemon started"
 	case "stop-daemon":
 		err = daemonctl.Stop(s.ControlAddr)
+		okMsg = "daemon stopped"
 	case "reload":
-		resp, reqErr := ipc.Send(s.ControlAddr, ipc.Request{Action: "reload"})
-		if reqErr != nil {
-			err = reqErr
-		} else if !resp.OK {
-			err = errors.New(resp.Error)
-		}
+		err = reloadIfRunning(s.ControlAddr)
+		okMsg = "config reloaded"
 	case "toggle-item":
 		err = s.toggleItem(strings.TrimSpace(r.FormValue("id")))
+		okMsg = "item toggled"
 	case "delete-item":
 		err = s.deleteItem(strings.TrimSpace(r.FormValue("id")))
+		okMsg = "item deleted"
 	case "save-item":
 		err = s.saveItem(r)
+		okMsg = "item saved"
+	case "quick-add":
+		err = s.quickAdd(r)
+		okMsg = "item added"
 	default:
 		err = fmt.Errorf("unknown action: %s", action)
 	}
@@ -171,7 +172,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?error="+urlEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok="+urlEscape(okMsg), http.StatusSeeOther)
 }
 
 func (s *Server) toggleItem(id string) error {
@@ -239,6 +240,13 @@ func (s *Server) saveItem(r *http.Request) error {
 		NoWindow:           r.FormValue("no_window") == "on",
 		StopBeforeCronExec: r.FormValue("stop_before_cron_exec") == "on",
 	}
+
+	if item.ID == "" {
+		item.ID = slug(item.ProcessName)
+	}
+	if item.ID == "" {
+		item.ID = slug(filepath.Base(item.ExecPath))
+	}
 	if item.ID == "" {
 		return fmt.Errorf("id is required")
 	}
@@ -262,6 +270,75 @@ func (s *Server) saveItem(r *http.Request) error {
 	if !replaced {
 		cfg.Items = append(cfg.Items, item)
 	}
+
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+	if err := config.Save(s.ConfigPath, cfg); err != nil {
+		return err
+	}
+	return reloadIfRunning(s.ControlAddr)
+}
+
+func (s *Server) quickAdd(r *http.Request) error {
+	cfg, err := config.Load(s.ConfigPath)
+	if err != nil {
+		return err
+	}
+
+	cmd := strings.TrimSpace(r.FormValue("quick_command"))
+	if cmd == "" {
+		return fmt.Errorf("command is required, e.g. ping or /usr/bin/python3")
+	}
+	name := strings.TrimSpace(r.FormValue("quick_name"))
+	if name == "" {
+		name = filepath.Base(cmd)
+	}
+	id := slug(name)
+	if id == "" {
+		id = slug(filepath.Base(cmd))
+	}
+	if id == "" {
+		return fmt.Errorf("unable to generate id from command/name")
+	}
+
+	mode := strings.TrimSpace(r.FormValue("quick_mode"))
+	cronExpr := strings.TrimSpace(r.FormValue("quick_cron"))
+	if cronExpr == "" {
+		cronExpr = "0 1 * * *"
+	}
+
+	item := config.Item{
+		ID:            id,
+		ProcessName:   name,
+		ExecPath:      cmd,
+		StartupParams: strings.TrimSpace(r.FormValue("quick_args")),
+		Started:       true,
+		NoWindow:      true,
+	}
+	item.Args = config.SplitArgs(item.StartupParams)
+
+	switch mode {
+	case "once":
+		item.OnlyOpenOnce = true
+		item.CronExpression = ""
+		item.StopBeforeCronExec = false
+	case "cron":
+		item.OnlyOpenOnce = false
+		item.CronExpression = cronExpr
+		item.StopBeforeCronExec = true
+	default: // guard
+		item.OnlyOpenOnce = false
+		item.CronExpression = ""
+		item.StopBeforeCronExec = true
+	}
+
+	for _, it := range cfg.Items {
+		if it.ID == item.ID {
+			return fmt.Errorf("id %q already exists; rename first", item.ID)
+		}
+	}
+	cfg.Items = append(cfg.Items, item)
 
 	if err := config.Validate(cfg); err != nil {
 		return err
@@ -297,6 +374,41 @@ func queryStatus(controlAddr string) ([]guardian.Status, bool, string) {
 	return resp.Status, true, ""
 }
 
+func modeLabel(it config.Item) string {
+	if it.OnlyOpenOnce {
+		return "Start Once"
+	}
+	if strings.TrimSpace(it.CronExpression) != "" {
+		if it.StopBeforeCronExec {
+			return "Cron Restart"
+		}
+		return "Cron Run"
+	}
+	return "Always Guard"
+}
+
+func slug(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	return out
+}
+
 func urlEscape(s string) string {
 	r := strings.NewReplacer(" ", "%20", "\n", "%0A", "\r", "", "#", "%23", "?", "%3F", "&", "%26")
 	return r.Replace(s)
@@ -312,17 +424,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2
 h1{margin:0 0 12px 0}
 .card{background:#fff;border:1px solid #dbe1ea;border-radius:10px;padding:14px;margin-bottom:14px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-input[type=text]{padding:6px;border:1px solid #c4cdd9;border-radius:6px;min-width:190px}
-button{padding:6px 10px;border:1px solid #8ba3c9;background:#1f6feb;color:#fff;border-radius:6px;cursor:pointer}
+input[type=text],select{padding:7px;border:1px solid #c4cdd9;border-radius:6px;min-width:180px}
+button{padding:7px 11px;border:1px solid #8ba3c9;background:#1f6feb;color:#fff;border-radius:6px;cursor:pointer}
 button.alt{background:#4b5563}
 button.warn{background:#b42318}
 table{border-collapse:collapse;width:100%}
-th,td{border-bottom:1px solid #edf1f6;padding:8px;text-align:left;font-size:13px}
+th,td{border-bottom:1px solid #edf1f6;padding:8px;text-align:left;font-size:13px;vertical-align:top}
 .tag{display:inline-block;padding:2px 7px;border-radius:999px;background:#eef2ff;font-size:12px}
 .off{background:#fee2e2}
+.ok{background:#dcfce7}
 a{color:#1f6feb;text-decoration:none}
 small{color:#475467}
+code{background:#eef2ff;padding:2px 4px;border-radius:4px}
 label{margin-right:8px}
+.err{color:#b42318}
 </style>
 </head>
 <body>
@@ -331,8 +446,9 @@ label{margin-right:8px}
 <div><strong>Daemon:</strong> {{if .Online}}<span class="tag">online</span>{{else}}<span class="tag off">offline</span>{{end}}</div>
 <div><small>control: {{.Addr}}</small></div>
 <div><small>config: {{.CfgPath}}</small></div>
-{{if .StatusErr}}<div><small style="color:#b42318">{{.StatusErr}}</small></div>{{end}}
-{{if .FlashErr}}<div><small style="color:#b42318">{{.FlashErr}}</small></div>{{end}}
+{{if .StatusErr}}<div class="err"><small>{{.StatusErr}}</small></div>{{end}}
+{{if .FlashErr}}<div class="err"><small>{{.FlashErr}}</small></div>{{end}}
+{{if .FlashOK}}<div><small><span class="tag ok">{{.FlashOK}}</span></small></div>{{end}}
 <div class="row" style="margin-top:8px">
 <form method="post" action="/action"><input type="hidden" name="action" value="start-daemon"><button>Start Daemon</button></form>
 <form method="post" action="/action"><input type="hidden" name="action" value="stop-daemon"><button class="warn">Stop Daemon</button></form>
@@ -341,8 +457,29 @@ label{margin-right:8px}
 </div>
 
 <div class="card">
-<h3 style="margin-top:0">Save Item</h3>
+<h3 style="margin-top:0">Quick Add (Recommended)</h3>
+<div><small>Use command name or full path. Examples: <code>ping</code>, <code>/usr/bin/python3</code>, <code>node</code>.</small></div>
 <form method="post" action="/action">
+<input type="hidden" name="action" value="quick-add">
+<div class="row" style="margin-top:8px">
+<input type="text" name="quick_name" placeholder="Name (e.g. My Bot)">
+<input type="text" name="quick_command" placeholder="Command (e.g. ping)">
+<input type="text" name="quick_args" placeholder="Arguments (e.g. amazon.com)">
+<select name="quick_mode">
+<option value="guard">Always Guard (restart on crash)</option>
+<option value="once">Start Once</option>
+<option value="cron">Cron Restart</option>
+</select>
+<input type="text" name="quick_cron" placeholder="cron (only for Cron Restart)" value="0 1 * * *">
+<button>Add Item</button>
+</div>
+</form>
+</div>
+
+<div class="card">
+<details>
+<summary><strong>Advanced Edit</strong> (for full fields)</summary>
+<form method="post" action="/action" style="margin-top:10px">
 <input type="hidden" name="action" value="save-item">
 <input type="hidden" name="original_id" value="{{.Edit.ID}}">
 <div class="row">
@@ -360,37 +497,36 @@ label{margin-right:8px}
 <label><input type="checkbox" name="no_window" {{if .Edit.NoWindow}}checked{{end}}> no window</label>
 <label><input type="checkbox" name="stop_before_cron_exec" {{if .Edit.StopBeforeCronExec}}checked{{end}}> restart on cron</label>
 <button>Save Item</button>
-<a href="/" style="margin-left:6px">clear</a>
+<a href="/" style="margin-left:6px">clear edit</a>
 </div>
 </form>
+</details>
 </div>
 
 <div class="card">
 <h3 style="margin-top:0">Configured Items</h3>
 <table>
-<thead><tr><th>id</th><th>name</th><th>exec</th><th>started</th><th>running</th><th>pid</th><th>cron</th><th>actions</th></tr></thead>
+<thead><tr><th>id</th><th>name</th><th>command</th><th>mode</th><th>started</th><th>running</th><th>pid</th><th>last error</th><th>actions</th></tr></thead>
 <tbody>
 {{range .Rows}}
 <tr>
 <td>{{.Item.ID}}</td>
 <td>{{.Item.ProcessName}}</td>
-<td><small>{{.Item.ExecPath}}</small></td>
+<td><small>{{.Item.ExecPath}} {{.Item.StartupParams}}</small></td>
+<td><small>{{.Mode}}</small></td>
 <td>{{.Item.Started}}</td>
 <td>{{if .Has}}{{.Status.Running}}{{else}}-{{end}}</td>
 <td>{{if .Has}}{{.Status.PID}}{{else}}-{{end}}</td>
-<td><small>{{.Item.CronExpression}}</small></td>
+<td><small class="err">{{if .Has}}{{.Status.LastError}}{{end}}</small></td>
 <td>
-<a href="/?edit={{.Item.ID}}">edit</a>
- |
-<form method="post" action="/action" style="display:inline"><input type="hidden" name="action" value="toggle-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="alt" style="padding:2px 6px">toggle</button></form>
- |
-<form method="post" action="/action" style="display:inline" onsubmit="return confirm('delete {{.Item.ID}}?')"><input type="hidden" name="action" value="delete-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="warn" style="padding:2px 6px">delete</button></form>
- |
+<a href="/?edit={{.Item.ID}}">edit</a> |
+<form method="post" action="/action" style="display:inline"><input type="hidden" name="action" value="toggle-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="alt" style="padding:2px 6px">toggle</button></form> |
+<form method="post" action="/action" style="display:inline" onsubmit="return confirm('delete {{.Item.ID}}?')"><input type="hidden" name="action" value="delete-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="warn" style="padding:2px 6px">delete</button></form> |
 <a href="/logs?id={{.Item.ID}}&lines=400" target="_blank">logs</a>
 </td>
 </tr>
 {{else}}
-<tr><td colspan="8">No items in config</td></tr>
+<tr><td colspan="9">No items configured. Use Quick Add above.</td></tr>
 {{end}}
 </tbody>
 </table>

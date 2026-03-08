@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -219,23 +220,27 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 		p.lastError = "execPath is empty"
 		return
 	}
-	if _, err := os.Stat(p.item.ExecPath); err != nil {
-		p.lastError = fmt.Sprintf("exec path not available: %v", err)
+	execPath, err := resolveExecPath(p.item.ExecPath, p.item.WorkingDir)
+	if err != nil {
+		p.lastError = err.Error()
 		return
 	}
 
-	cmd := exec.Command(p.item.ExecPath, p.item.Args...)
+	cmd := exec.Command(execPath, p.item.Args...)
 	if p.item.WorkingDir != "" {
 		cmd.Dir = p.item.WorkingDir
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	env := os.Environ()
+	if !hasPathEnv(env) {
+		env = append(env, "PATH="+defaultSearchPath())
+	}
 	if len(p.item.Env) > 0 {
-		env := os.Environ()
 		for k, v := range p.item.Env {
 			env = append(env, k+"="+v)
 		}
-		cmd.Env = env
 	}
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -268,6 +273,55 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 	go m.consumeOutput(p.item.ID, p.ring, stdout)
 	go m.consumeOutput(p.item.ID, p.ring, stderr)
 	go m.waitForExit(p, cmd)
+}
+
+func resolveExecPath(execPath, workingDir string) (string, error) {
+	execPath = strings.TrimSpace(execPath)
+	if execPath == "" {
+		return "", fmt.Errorf("exec path is empty")
+	}
+
+	// Absolute or explicit relative path.
+	if strings.Contains(execPath, "/") {
+		candidates := []string{execPath}
+		if !filepath.IsAbs(execPath) && strings.TrimSpace(workingDir) != "" {
+			candidates = append([]string{filepath.Join(workingDir, execPath)}, candidates...)
+		}
+		for _, c := range candidates {
+			if st, err := os.Stat(c); err == nil && !st.IsDir() {
+				return c, nil
+			}
+		}
+		return "", fmt.Errorf("exec path not available: %s", execPath)
+	}
+
+	// Binary name mode: search PATH first.
+	if lp, err := exec.LookPath(execPath); err == nil {
+		return lp, nil
+	}
+
+	// Fallback common locations for launchd environments.
+	for _, dir := range strings.Split(defaultSearchPath(), ":") {
+		c := filepath.Join(dir, execPath)
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c, nil
+		}
+	}
+
+	return "", fmt.Errorf("executable %q not found in PATH", execPath)
+}
+
+func hasPathEnv(env []string) bool {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultSearchPath() string {
+	return "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 func (m *Manager) waitForExit(p *managed, cmd *exec.Cmd) {
