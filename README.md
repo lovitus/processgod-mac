@@ -5,7 +5,7 @@ macOS-native rewrite of `lovitus/processgod`.
 This version is implemented in Go and focuses on service-style process guarding on macOS:
 
 - launchd service mode (user LaunchAgent and system LaunchDaemon)
-- boot startup support in `--system` mode
+- boot startup support in `--system` mode (before user login)
 - process auto-restart guard
 - cron-triggered restart/run behavior
 - in-memory log ring cache per guarded process
@@ -30,6 +30,7 @@ If you open `ProcessGodMac.app` from Finder:
 - guardian is auto-started
 - tray menu can `Start/Stop/Reload/Show Status/Open Dashboard/Open Config/Quit`
 - dashboard auto-opens for full config management (add/edit/delete/toggle items + view logs)
+- tray shows daemon service level (`user` / `system` / `manual`) and hint for switching to system mode
 
 ## Service Mode (launchd)
 
@@ -46,6 +47,8 @@ System mode (starts on boot, requires sudo):
 sudo ./dist/processgod-mac service install --system
 sudo ./dist/processgod-mac service status --system
 ```
+
+System mode is the one that starts before login screen.
 
 Other operations:
 
@@ -92,6 +95,11 @@ export PROCESSGOD_HOME=/path/to/runtime-dir
 ./dist/processgod-mac dashboard
 ```
 
+Additional docs:
+
+- [User Guide](docs/USER_GUIDE.md)
+- [Operations](docs/OPERATIONS.md)
+
 Dashboard provides original-app equivalent config workflow:
 
 - add/edit/delete guarded process items
@@ -102,12 +110,16 @@ Dashboard provides original-app equivalent config workflow:
 - quick-add guided form for non-technical users
 - command-name support via PATH lookup (e.g. `ping`, `node`, `java`)
 - advanced add form for full-field input
+- daemon level + system-mode hint shown in dashboard header
+- PATH editor with `modify` / `save` / `discard/cancel`
 
-Log retention policy:
+Log retention policy (memory-only, no disk log files):
 
-- task stdout/stderr logs are memory-only
-- each task keeps latest `4000` lines in ring buffer
-- old lines rotate out in memory
+- each task has 2 rotating buffers
+- `error_warning` keeps latest `100` lines
+- `standard_other` keeps latest `20` lines
+- logs include line sequence numbers (`E#<n>` / `S#<n>`) and buffer size summary
+- old lines rotate out in memory only
 
 ## Cron Semantics
 

@@ -17,11 +17,13 @@ type Request struct {
 }
 
 type Response struct {
-	OK      bool              `json:"ok"`
-	Message string            `json:"message,omitempty"`
-	Error   string            `json:"error,omitempty"`
-	Logs    string            `json:"logs,omitempty"`
-	Status  []guardian.Status `json:"status,omitempty"`
+	OK           bool              `json:"ok"`
+	Message      string            `json:"message,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	Logs         string            `json:"logs,omitempty"`
+	Status       []guardian.Status `json:"status,omitempty"`
+	ServiceLevel string            `json:"serviceLevel,omitempty"`
+	ServiceHint  string            `json:"serviceHint,omitempty"`
 }
 
 type Handler interface {
@@ -29,6 +31,7 @@ type Handler interface {
 	Statuses() []guardian.Status
 	Logs(id string, lines int) (string, error)
 	Shutdown() error
+	RuntimeInfo() (level string, hint string)
 }
 
 type Server struct {
@@ -103,7 +106,8 @@ func (s *Server) dispatch(req Request) Response {
 		}
 		return Response{OK: true, Message: "reloaded"}
 	case "status":
-		return Response{OK: true, Status: s.handler.Statuses()}
+		level, hint := s.handler.RuntimeInfo()
+		return Response{OK: true, Status: s.handler.Statuses(), ServiceLevel: level, ServiceHint: hint}
 	case "logs":
 		logs, err := s.handler.Logs(req.ID, req.Lines)
 		if err != nil {

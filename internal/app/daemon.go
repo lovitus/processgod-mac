@@ -10,6 +10,7 @@ import (
 	"github.com/lovitus/processgod-mac/internal/config"
 	"github.com/lovitus/processgod-mac/internal/guardian"
 	"github.com/lovitus/processgod-mac/internal/ipc"
+	"github.com/lovitus/processgod-mac/internal/service"
 )
 
 type Daemon struct {
@@ -17,17 +18,22 @@ type Daemon struct {
 	controlAddr string
 	manager     *guardian.Manager
 	logger      *log.Logger
+	level       string
+	levelHint   string
 	stopOnce    sync.Once
 	stopFunc    func()
 }
 
 func NewDaemon(configPath, controlAddr string) *Daemon {
 	logger := log.New(os.Stdout, "[processgod] ", log.LstdFlags)
+	level, hint := detectLevel()
 	return &Daemon{
 		configPath:  configPath,
 		controlAddr: controlAddr,
 		manager:     guardian.New(logger),
 		logger:      logger,
+		level:       level,
+		levelHint:   hint,
 	}
 }
 
@@ -48,6 +54,10 @@ func (d *Daemon) Statuses() []guardian.Status {
 
 func (d *Daemon) Logs(id string, lines int) (string, error) {
 	return d.manager.Logs(id, lines)
+}
+
+func (d *Daemon) RuntimeInfo() (string, string) {
+	return d.level, d.levelHint
 }
 
 func (d *Daemon) SetStopFunc(fn func()) {
@@ -79,4 +89,22 @@ func (d *Daemon) Run(stop <-chan struct{}) error {
 	err := server.Run(stop)
 	wg.Wait()
 	return err
+}
+
+func detectLevel() (string, string) {
+	label := os.Getenv("LAUNCH_JOB_LABEL")
+	euid := os.Geteuid()
+
+	if label == service.Label {
+		if euid == 0 {
+			return "system", "System mode: starts before user login."
+		}
+		return "user", "User mode: starts after user login. Use: sudo processgod-mac service install --system"
+	}
+
+	if euid == 0 {
+		return "system-manual", "Running as root manually. For managed pre-login boot use: sudo processgod-mac service install --system"
+	}
+
+	return "manual", "Manual mode. For auto-start after login use: processgod-mac service install"
 }

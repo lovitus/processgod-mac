@@ -21,10 +21,10 @@ import (
 
 const (
 	defaultTickInterval = 3 * time.Second
-	defaultLogLines     = 4000
+	errWarnLogLines     = 100
+	stdLogLines         = 20
 )
 
-// Status describes runtime status of one guarded item.
 type Status struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -36,7 +36,6 @@ type Status struct {
 	LastError string    `json:"lastError,omitempty"`
 }
 
-// Manager owns guarded process lifecycle.
 type Manager struct {
 	mu           sync.Mutex
 	procs        map[string]*managed
@@ -48,7 +47,7 @@ type Manager struct {
 type managed struct {
 	item        config.Item
 	cronSched   *cron.Schedule
-	ring        *logbuf.Ring
+	logs        *logbuf.TaskLog
 	cmd         *exec.Cmd
 	running     bool
 	pid         int
@@ -177,10 +176,10 @@ func (m *Manager) Logs(id string, lines int) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("process id %q not found", id)
 	}
-	if p.ring == nil {
+	if p.logs == nil {
 		return "", nil
 	}
-	return p.ring.Last(lines), nil
+	return p.logs.Render(lines), nil
 }
 
 func (m *Manager) tick(now time.Time) {
@@ -245,12 +244,9 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 		cmd.Dir = p.item.WorkingDir
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	env := os.Environ()
-	env = setPathEnv(env, m.pathEnv)
-	if len(p.item.Env) > 0 {
-		for k, v := range p.item.Env {
-			env = append(env, k+"="+v)
-		}
+	env := setPathEnv(os.Environ(), m.pathEnv)
+	for k, v := range p.item.Env {
+		env = append(env, k+"="+v)
 	}
 	cmd.Env = env
 
@@ -276,14 +272,14 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 	p.lastStart = now
 	p.lastError = ""
 	p.startedOnce = true
-	if p.ring == nil {
-		p.ring = logbuf.New(defaultLogLines)
+	if p.logs == nil {
+		p.logs = logbuf.NewTaskLog(errWarnLogLines, stdLogLines)
 	}
 
 	m.logger.Printf("started %s (%d)", p.item.ID, p.pid)
 
-	go m.consumeOutput(p.item.ID, p.ring, stdout)
-	go m.consumeOutput(p.item.ID, p.ring, stderr)
+	go m.consumeOutput(p.logs, stdout, false)
+	go m.consumeOutput(p.logs, stderr, true)
 	go m.waitForExit(p, cmd)
 }
 
@@ -293,7 +289,6 @@ func resolveExecPath(execPath, workingDir, pathEnv string) (string, error) {
 		return "", fmt.Errorf("exec path is empty")
 	}
 
-	// Absolute or explicit relative path.
 	if strings.Contains(execPath, "/") {
 		candidates := []string{execPath}
 		if !filepath.IsAbs(execPath) && strings.TrimSpace(workingDir) != "" {
@@ -307,21 +302,10 @@ func resolveExecPath(execPath, workingDir, pathEnv string) (string, error) {
 		return "", fmt.Errorf("exec path not available: %s", execPath)
 	}
 
-	// Binary name mode: search configured PATH first.
 	if lp, err := lookPathIn(execPath, pathEnv); err == nil {
 		return lp, nil
 	}
-
 	return "", fmt.Errorf("executable %q not found in PATH", execPath)
-}
-
-func hasPathEnv(env []string) bool {
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			return true
-		}
-	}
-	return false
 }
 
 func setPathEnv(env []string, pathEnv string) []string {
@@ -385,15 +369,15 @@ func (m *Manager) waitForExit(p *managed, cmd *exec.Cmd) {
 	}
 }
 
-func (m *Manager) consumeOutput(id string, ring *logbuf.Ring, reader interface{ Read([]byte) (int, error) }) {
+func (m *Manager) consumeOutput(logs *logbuf.TaskLog, reader interface{ Read([]byte) (int, error) }, stderr bool) {
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
-		ring.Add(scanner.Text())
+		logs.Add(scanner.Text(), stderr)
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
-		ring.Add("[output-reader-error] " + err.Error())
+		logs.Add("[output-reader-error] "+err.Error(), true)
 	}
 }
 
@@ -430,7 +414,7 @@ func newManaged(it config.Item) *managed {
 	return &managed{
 		item:      it,
 		cronSched: parseCron(it.CronExpression),
-		ring:      logbuf.New(defaultLogLines),
+		logs:      logbuf.NewTaskLog(errWarnLogLines, stdLogLines),
 	}
 }
 

@@ -422,6 +422,10 @@ func (t *trayApp) onReady() {
 	statusItem.Disable()
 	activeItem := systray.AddMenuItem("Active: checking...", "Active process count")
 	activeItem.Disable()
+	levelItem := systray.AddMenuItem("Level: checking...", "Daemon service level")
+	levelItem.Disable()
+	hintItem := systray.AddMenuItem("Hint: checking...", "Service mode hint")
+	hintItem.Disable()
 	systray.AddSeparator()
 
 	startItem := systray.AddMenuItem("Start Guardian (stopped)", "Start the guardian daemon")
@@ -440,7 +444,7 @@ func (t *trayApp) onReady() {
 	}
 	_ = exec.Command("open", t.dashboard).Run()
 
-	go t.refreshStatus(statusItem, activeItem, startItem, stopItem, reloadItem, showStatusItem)
+	go t.refreshStatus(statusItem, activeItem, levelItem, hintItem, startItem, stopItem, reloadItem, showStatusItem)
 
 	go func() {
 		for {
@@ -489,23 +493,25 @@ func (t *trayApp) ensureGuardianRunning() error {
 }
 
 func (t *trayApp) statusSummary() string {
-	online, running, total := t.runtimeState()
+	online, running, total, level, _ := t.runtimeState()
 	if !online {
 		return "Guardian stopped."
 	}
 	if total == 0 {
-		return "Guardian running. No started items configured."
+		return fmt.Sprintf("Guardian running (%s). No started items configured.", level)
 	}
-	return fmt.Sprintf("Guardian running. %d/%d items active.", running, total)
+	return fmt.Sprintf("Guardian running (%s). %d/%d items active.", level, running, total)
 }
 
-func (t *trayApp) refreshStatus(statusItem, activeItem, startItem, stopItem, reloadItem, showStatusItem *systray.MenuItem) {
+func (t *trayApp) refreshStatus(statusItem, activeItem, levelItem, hintItem, startItem, stopItem, reloadItem, showStatusItem *systray.MenuItem) {
 	for {
-		online, running, total := t.runtimeState()
+		online, running, total, level, hint := t.runtimeState()
 
 		if online {
 			statusItem.SetTitle("Status: daemon running")
 			activeItem.SetTitle(fmt.Sprintf("Active: %d/%d", running, total))
+			levelItem.SetTitle("Level: " + level)
+			hintItem.SetTitle("Hint: " + hint)
 			startItem.SetTitle("Start Guardian (running)")
 			stopItem.SetTitle("Stop Guardian (running)")
 			startItem.Disable()
@@ -515,6 +521,8 @@ func (t *trayApp) refreshStatus(statusItem, activeItem, startItem, stopItem, rel
 		} else {
 			statusItem.SetTitle("Status: daemon stopped")
 			activeItem.SetTitle("Active: 0/0")
+			levelItem.SetTitle("Level: stopped")
+			hintItem.SetTitle("Hint: start guardian first")
 			startItem.SetTitle("Start Guardian (stopped)")
 			stopItem.SetTitle("Stop Guardian (stopped)")
 			startItem.Enable()
@@ -527,10 +535,10 @@ func (t *trayApp) refreshStatus(statusItem, activeItem, startItem, stopItem, rel
 	}
 }
 
-func (t *trayApp) runtimeState() (online bool, running int, total int) {
+func (t *trayApp) runtimeState() (online bool, running int, total int, level string, hint string) {
 	resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
 	if err != nil || !resp.OK {
-		return false, 0, 0
+		return false, 0, 0, "unknown", "Use sudo processgod-mac service install --system for pre-login boot."
 	}
 	total = len(resp.Status)
 	for _, st := range resp.Status {
@@ -538,5 +546,13 @@ func (t *trayApp) runtimeState() (online bool, running int, total int) {
 			running++
 		}
 	}
-	return true, running, total
+	level = resp.ServiceLevel
+	if level == "" {
+		level = "manual"
+	}
+	hint = resp.ServiceHint
+	if hint == "" {
+		hint = "Use sudo processgod-mac service install --system for pre-login boot."
+	}
+	return true, running, total, level, hint
 }

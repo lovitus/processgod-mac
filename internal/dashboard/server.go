@@ -71,7 +71,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	statuses, online, statusErr := queryStatus(s.ControlAddr)
+	statuses, online, statusErr, level, levelHint := queryStatus(s.ControlAddr)
 	statusByID := make(map[string]guardian.Status, len(statuses))
 	for _, st := range statuses {
 		statusByID[st.ID] = st
@@ -130,6 +130,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		StopDisabled   bool
 		ReloadDisabled bool
 		PathEnv        string
+		ServiceLevel   string
+		ServiceHint    string
 	}{
 		Rows:           rows,
 		Edit:           edit,
@@ -146,6 +148,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		StopDisabled:   stopDisabled,
 		ReloadDisabled: reloadDisabled,
 		PathEnv:        cfg.PathEnv,
+		ServiceLevel:   level,
+		ServiceHint:    levelHint,
 	}
 
 	if err := pageTmpl.Execute(w, data); err != nil {
@@ -427,15 +431,15 @@ func reloadIfRunning(controlAddr string) error {
 	return nil
 }
 
-func queryStatus(controlAddr string) ([]guardian.Status, bool, string) {
+func queryStatus(controlAddr string) ([]guardian.Status, bool, string, string, string) {
 	resp, err := ipc.Send(controlAddr, ipc.Request{Action: "status"})
 	if err != nil {
-		return nil, false, err.Error()
+		return nil, false, err.Error(), "unknown", "Daemon unreachable."
 	}
 	if !resp.OK {
-		return nil, false, resp.Error
+		return nil, false, resp.Error, "unknown", "Daemon status failed."
 	}
-	return resp.Status, true, ""
+	return resp.Status, true, "", resp.ServiceLevel, resp.ServiceHint
 }
 
 func modeLabel(it config.Item) string {
@@ -535,6 +539,8 @@ function cancelPathEdit(){
 <div><strong>Daemon:</strong> {{if .Online}}<span class="tag">online</span>{{else}}<span class="tag off">offline</span>{{end}}</div>
 <div><small>control: {{.Addr}}</small></div>
 <div><small>config: {{.CfgPath}}</small></div>
+<div><small>service level: <strong>{{.ServiceLevel}}</strong></small></div>
+<div><small>hint: {{.ServiceHint}}</small></div>
 {{if .StatusErr}}<div class="err"><small>{{.StatusErr}}</small></div>{{end}}
 {{if .FlashErr}}<div class="err"><small>{{.FlashErr}}</small></div>{{end}}
 {{if .FlashOK}}<div><small><span class="tag ok">{{.FlashOK}}</span></small></div>{{end}}
