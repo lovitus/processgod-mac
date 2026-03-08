@@ -430,7 +430,6 @@ func (t *trayApp) onReady() {
 	showStatusItem := systray.AddMenuItem("Show Status", "Show short summary notification")
 	openDashItem := systray.AddMenuItem("Open Dashboard", "Open web dashboard")
 	openConfigItem := systray.AddMenuItem("Open Config", "Open config.json")
-	openLogsItem := systray.AddMenuItem("Open Launch Log", "Open app-launch.log")
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit Tray", "Quit tray app")
 
@@ -475,8 +474,6 @@ func (t *trayApp) onReady() {
 				_ = exec.Command("open", t.dashboard).Run()
 			case <-openConfigItem.ClickedCh:
 				_ = exec.Command("open", t.configPath).Run()
-			case <-openLogsItem.ClickedCh:
-				_ = exec.Command("open", filepath.Join(t.workDir, "app-launch.log")).Run()
 			case <-quitItem.ClickedCh:
 				systray.Quit()
 				return

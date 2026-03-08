@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	appName = "ProcessGodMac"
+	appName             = "ProcessGodMac"
+	defaultPathEnvValue = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Users/fanli/.cargo/bin"
 )
 
 // Config is the root config model.
@@ -149,10 +150,7 @@ func (c *Config) Normalize() {
 
 // DefaultPathEnv returns the PATH used by daemon and child processes.
 func DefaultPathEnv() string {
-	if v := strings.TrimSpace(os.Getenv("PATH")); v != "" {
-		return v
-	}
-	return "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Users/fanli/.cargo/bin"
+	return defaultPathEnvValue
 }
 
 func (i *Item) Normalize() {

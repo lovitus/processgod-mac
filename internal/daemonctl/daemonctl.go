@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -43,7 +42,7 @@ func EnsureRunning(controlAddr, exePath, workDir string) error {
 		return err
 	}
 	if err := WaitPing(controlAddr, 5*time.Second); err != nil {
-		return fmt.Errorf("daemon failed to start; check %s", filepath.Join(workDir, "app-launch.log"))
+		return fmt.Errorf("daemon failed to start")
 	}
 	return nil
 }
@@ -61,10 +60,9 @@ func Stop(controlAddr string) error {
 }
 
 func StartDetached(exePath, workDir string) error {
-	logPath := filepath.Join(workDir, "app-launch.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("open daemon log: %w", err)
+		return fmt.Errorf("open devnull: %w", err)
 	}
 
 	cmd := exec.Command(exePath, "daemon")

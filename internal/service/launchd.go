@@ -138,9 +138,9 @@ func renderPlist(binaryPath, workingDir string) string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/processgod-mac.out.log</string>
+  <string>/dev/null</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/processgod-mac.err.log</string>
+  <string>/dev/null</string>
 </dict>
 </plist>
 `

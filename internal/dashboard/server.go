@@ -578,6 +578,32 @@ function cancelPathEdit(){
 </div>
 
 <div class="card">
+<details>
+<summary><strong>Advanced Add</strong> (all fields)</summary>
+<form method="post" action="/action" style="margin-top:10px">
+<input type="hidden" name="action" value="save-item">
+<input type="hidden" name="original_id" value="">
+<div class="row">
+<input type="text" name="id" placeholder="id (optional)">
+<input type="text" name="process_name" placeholder="process name">
+<input type="text" name="exec_path" placeholder="exec path or command name">
+<input type="text" name="startup_params" placeholder="startup params">
+<input type="text" name="working_dir" placeholder="working dir (optional)">
+<input type="text" name="cron_expression" placeholder="cron expression">
+</div>
+<div class="row" style="margin-top:8px">
+<label><input type="checkbox" name="started" checked> started</label>
+<label><input type="checkbox" name="only_open_once"> start once</label>
+<label><input type="checkbox" name="minimize"> minimize</label>
+<label><input type="checkbox" name="no_window" checked> no window</label>
+<label><input type="checkbox" name="stop_before_cron_exec" checked> restart on cron</label>
+<button>Add Advanced Item</button>
+</div>
+</form>
+</details>
+</div>
+
+<div class="card">
 <h3 style="margin-top:0">Edit Item {{if .EditFound}}: {{.Edit.ID}}{{end}}</h3>
 <form method="post" action="/action">
 <input type="hidden" name="action" value="save-item">

@@ -32,6 +32,13 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 - 会自动打开 Dashboard，可完整管理配置（新增/编辑/删除/启停单项/查看日志）
 - Dashboard 提供 Quick Add 简化表单，适合非技术用户
 - 支持直接填写命令名（例如 `ping`、`node`、`java`），无需绝对路径
+- 保留 Advanced Add（完整字段）表单
+
+日志保留策略：
+
+- 任务 stdout/stderr 仅保存在内存
+- 每个任务最多保留最近 `4000` 行（环形缓冲）
+- 超出后按环形覆盖，不写入磁盘
 
 ## 服务模式
 

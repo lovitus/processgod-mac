@@ -101,6 +101,13 @@ Dashboard provides original-app equivalent config workflow:
 - view per-item in-memory logs
 - quick-add guided form for non-technical users
 - command-name support via PATH lookup (e.g. `ping`, `node`, `java`)
+- advanced add form for full-field input
+
+Log retention policy:
+
+- task stdout/stderr logs are memory-only
+- each task keeps latest `4000` lines in ring buffer
+- old lines rotate out in memory
 
 ## Cron Semantics
 
