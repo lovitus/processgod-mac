@@ -2,7 +2,7 @@ package logbuf
 
 import (
 	"fmt"
-	"sort"
+	"math"
 	"strings"
 	"sync"
 )
@@ -12,6 +12,8 @@ type Entry struct {
 	Text string
 	Err  bool
 }
+
+const maxStoredLineBytes = 4096
 
 type entryRing struct {
 	buf      []Entry
@@ -73,9 +75,14 @@ func NewTaskLog(errWarnCapacity, stdCapacity int) *TaskLog {
 func (t *TaskLog) Add(line string, stderr bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.total == math.MaxInt64 {
+		// Keep sequence labels positive if the process runs for an extreme duration.
+		t.total = 0
+	}
 	t.total++
-	e := Entry{Seq: t.total, Text: line}
-	if stderr || isErrWarnLine(line) {
+	raw := line
+	e := Entry{Seq: t.total, Text: truncateStoredLine(raw)}
+	if stderr || isErrWarnLine(raw) {
 		e.Err = true
 		t.err.add(e)
 		return
@@ -89,6 +96,7 @@ func (t *TaskLog) Render(maxPerSection int) string {
 
 	errEntries := t.err.entries()
 	stdEntries := t.std.entries()
+	requested := maxPerSection
 	if maxPerSection > 0 {
 		errEntries = trimLastEntries(errEntries, maxPerSection)
 		stdEntries = trimLastEntries(stdEntries, maxPerSection)
@@ -99,6 +107,11 @@ func (t *TaskLog) Render(maxPerSection int) string {
 	b.WriteString(fmt.Sprintf("# error_warning: kept %d/%d lines\n", t.err.len(), t.err.cap()))
 	b.WriteString(fmt.Sprintf("# standard_other: kept %d/%d lines\n", t.std.len(), t.std.cap()))
 	b.WriteString(fmt.Sprintf("# total_seen_lines: %d\n", t.total))
+	b.WriteString(fmt.Sprintf("# line_max_bytes: %d\n", maxStoredLineBytes))
+	if requested > 0 {
+		b.WriteString(fmt.Sprintf("# requested_lines_per_section: %d\n", requested))
+	}
+	b.WriteString(fmt.Sprintf("# displayed_now: error_warning=%d standard_other=%d total=%d\n", len(errEntries), len(stdEntries), len(errEntries)+len(stdEntries)))
 
 	b.WriteString("\n[error_warning]\n")
 	for _, e := range errEntries {
@@ -108,18 +121,6 @@ func (t *TaskLog) Render(maxPerSection int) string {
 	b.WriteString("\n[standard_other]\n")
 	for _, e := range stdEntries {
 		b.WriteString(fmt.Sprintf("S#%d %s\n", e.Seq, e.Text))
-	}
-
-	b.WriteString("\n[merged_recent]\n")
-	merged := append([]Entry{}, errEntries...)
-	merged = append(merged, stdEntries...)
-	sort.Slice(merged, func(i, j int) bool { return merged[i].Seq < merged[j].Seq })
-	for _, e := range merged {
-		prefix := "S"
-		if e.Err {
-			prefix = "E"
-		}
-		b.WriteString(fmt.Sprintf("%s#%d %s\n", prefix, e.Seq, e.Text))
 	}
 
 	return strings.TrimRight(b.String(), "\n")
@@ -138,4 +139,19 @@ func isErrWarnLine(line string) bool {
 		strings.Contains(v, "warn") ||
 		strings.Contains(v, "fatal") ||
 		strings.Contains(v, "panic")
+}
+
+func truncateStoredLine(line string) string {
+	if len(line) <= maxStoredLineBytes {
+		return line
+	}
+	suffix := fmt.Sprintf(" ... [truncated %d bytes]", len(line)-maxStoredLineBytes)
+	prefixLen := maxStoredLineBytes
+	if len(suffix) < maxStoredLineBytes {
+		prefixLen = maxStoredLineBytes - len(suffix)
+	}
+	if prefixLen < 0 {
+		prefixLen = 0
+	}
+	return line[:prefixLen] + suffix
 }

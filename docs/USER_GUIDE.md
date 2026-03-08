@@ -60,10 +60,11 @@ Per task buffers:
 
 - `error_warning`: latest 100 lines
 - `standard_other`: latest 20 lines
+- each stored log line is truncated to max 4096 bytes
 
 Output includes line sequence markers:
 
 - `E#<n>` for error/warning
 - `S#<n>` for standard/other
 
-No task logs are persisted to disk.
+No task logs are persisted to disk. The in-memory cache does not grow by line count beyond these caps.

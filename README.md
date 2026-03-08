@@ -118,8 +118,10 @@ Log retention policy (memory-only, no disk log files):
 - each task has 2 rotating buffers
 - `error_warning` keeps latest `100` lines
 - `standard_other` keeps latest `20` lines
+- each stored line is capped to `4096` bytes (`line_max_bytes`)
 - logs include line sequence numbers (`E#<n>` / `S#<n>`) and buffer size summary
 - old lines rotate out in memory only
+- effective per-task log cache is bounded to about `120 * 4096` bytes of text (+ Go object overhead), not unbounded growth
 
 ## Cron Semantics
 

@@ -34,6 +34,13 @@ processgod-mac logs <id> --lines 50
 processgod-mac dashboard
 ```
 
+## Log Memory Limits
+
+- Logs are memory-only (no disk file logging for guarded tasks).
+- Per task: `error_warning=100` lines, `standard_other=20` lines.
+- Per stored line: max `4096` bytes (longer lines are truncated in memory).
+- `lines=` in dashboard/CLI only controls how many retained lines are displayed, not extra storage.
+
 ## Config Location
 
 Default:
