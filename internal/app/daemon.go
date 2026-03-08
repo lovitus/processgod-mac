@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/lovitus/processgod-mac/internal/config"
@@ -92,14 +95,14 @@ func (d *Daemon) Run(stop <-chan struct{}) error {
 }
 
 func detectLevel() (string, string) {
-	label := os.Getenv("LAUNCH_JOB_LABEL")
 	euid := os.Geteuid()
+	pid := os.Getpid()
 
-	if label == service.Label {
-		if euid == 0 {
-			return "system", "System mode: starts before user login."
-		}
+	if launchedAs(pid, fmt.Sprintf("gui/%d", os.Getuid()), service.Label) {
 		return "user", "User mode: starts after user login. Use: sudo processgod-mac service install --system"
+	}
+	if launchedAs(pid, "system", service.Label) {
+		return "system", "System mode: starts before user login."
 	}
 
 	if euid == 0 {
@@ -107,4 +110,14 @@ func detectLevel() (string, string) {
 	}
 
 	return "manual", "Manual mode. For auto-start after login use: processgod-mac service install"
+}
+
+func launchedAs(pid int, domain, label string) bool {
+	cmd := exec.Command("launchctl", "print", domain+"/"+label)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	pattern := "pid = " + strconv.Itoa(pid)
+	return strings.Contains(string(out), pattern)
 }
