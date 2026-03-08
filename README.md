@@ -24,6 +24,8 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 ./dist/processgod-mac daemon
 ```
 
+If you open `ProcessGodMac.app` from Finder, it now auto-starts the guardian in background mode and shows a macOS notification.
+
 ## Service Mode (launchd)
 
 User mode (starts at user login):

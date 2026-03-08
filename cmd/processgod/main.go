@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/lovitus/processgod-mac/internal/app"
 	"github.com/lovitus/processgod-mac/internal/config"
@@ -28,16 +30,19 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 {
-		printUsage()
-		return nil
-	}
-
 	configPath, err := config.EnsureDefaultConfig()
 	if err != nil {
 		return err
 	}
 	controlAddr := config.ControlAddress()
+
+	if len(args) == 0 {
+		if launchedFromAppBundle() {
+			return runAppMode(configPath, controlAddr)
+		}
+		printUsage()
+		return nil
+	}
 
 	switch args[0] {
 	case "version", "--version", "-v":
@@ -77,6 +82,86 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runAppMode(configPath, controlAddr string) error {
+	if resp, err := ipc.Send(controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
+		notify("ProcessGodMac", "Guardian is already running.")
+		return nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		exe = strings.TrimSpace(exe)
+	}
+
+	workDir, err := config.EnsureAppSupportDir()
+	if err != nil {
+		return err
+	}
+
+	if err := service.Install(exe, workDir, false); err == nil {
+		msg := fmt.Sprintf("Service started. Config: %s", configPath)
+		notify("ProcessGodMac", msg)
+		return nil
+	}
+
+	// Fallback when launchd bootstrap isn't available in the current session.
+	if err := startDaemonDetached(exe, workDir); err != nil {
+		return err
+	}
+
+	time.Sleep(400 * time.Millisecond)
+	if resp, err := ipc.Send(controlAddr, ipc.Request{Action: "ping"}); err != nil || !resp.OK {
+		return fmt.Errorf("daemon failed to start; check %s", filepath.Join(workDir, "app-launch.log"))
+	}
+	notify("ProcessGodMac", "Guardian started in background mode.")
+	return nil
+}
+
+func launchedFromAppBundle() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(exe, ".app/Contents/MacOS/")
+}
+
+func startDaemonDetached(exePath, workDir string) error {
+	logPath := filepath.Join(workDir, "app-launch.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open daemon log: %w", err)
+	}
+
+	cmd := exec.Command(exePath, "daemon")
+	cmd.Dir = workDir
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("start detached daemon: %w", err)
+	}
+	_ = cmd.Process.Release()
+	_ = f.Close()
+	return nil
+}
+
+func notify(title, message string) {
+	script := fmt.Sprintf("display notification %s with title %s", appleScriptQuote(message), appleScriptQuote(title))
+	_ = exec.Command("osascript", "-e", script).Run()
+}
+
+func appleScriptQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return `"` + s + `"`
 }
 
 func runDaemon(configPath, controlAddr string) error {
@@ -267,6 +352,7 @@ func printUsage() {
 	fmt.Println(`processgod-mac - macOS process guardian
 
 Usage:
+  processgod   (inside .app: starts background guardian service)
   processgod daemon
   processgod reload
   processgod status

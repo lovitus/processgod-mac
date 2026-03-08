@@ -41,6 +41,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
   <string>${PROJECT_NAME}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
 </dict>

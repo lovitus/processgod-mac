@@ -24,6 +24,8 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 ./dist/processgod-mac daemon
 ```
 
+从 Finder 双击 `ProcessGodMac.app` 时，会自动后台启动守护进程，并弹出系统通知提示。
+
 ## 服务模式
 
 用户级（登录后启动）：
