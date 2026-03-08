@@ -28,10 +28,11 @@ type Server struct {
 }
 
 type row struct {
-	Item   config.Item
-	Status guardian.Status
-	Has    bool
-	Mode   string
+	Item        config.Item
+	Status      guardian.Status
+	Has         bool
+	ModeLabel   string
+	ToggleLabel string
 }
 
 func (s *Server) Run(openBrowser bool) error {
@@ -59,10 +60,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	editID := strings.TrimSpace(r.URL.Query().Get("edit"))
 	edit := config.Item{Started: true, StopBeforeCronExec: true, CronExpression: "0 1 * * *"}
+	editFound := false
 	if editID != "" {
 		for _, it := range cfg.Items {
 			if it.ID == editID {
 				edit = it
+				editFound = true
 				break
 			}
 		}
@@ -78,27 +81,71 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	rows := make([]row, 0, len(cfg.Items))
 	for _, it := range cfg.Items {
 		st, ok := statusByID[it.ID]
-		rows = append(rows, row{Item: it, Status: st, Has: ok, Mode: modeLabel(it)})
+		toggleLabel := "toggle(stopped)"
+		if it.Started {
+			toggleLabel = "toggle(started)"
+		}
+		rows = append(rows, row{
+			Item:        it,
+			Status:      st,
+			Has:         ok,
+			ModeLabel:   modeLabel(it),
+			ToggleLabel: toggleLabel,
+		})
+	}
+
+	startLabel := "Start Daemon (stopped)"
+	stopLabel := "Stop Daemon (stopped)"
+	startDisabled := false
+	stopDisabled := true
+	reloadDisabled := true
+	if online {
+		startLabel = "Start Daemon (running)"
+		stopLabel = "Stop Daemon (running)"
+		startDisabled = true
+		stopDisabled = false
+		reloadDisabled = false
+	}
+
+	flashErr := strings.TrimSpace(r.URL.Query().Get("error"))
+	if !editFound && editID != "" {
+		if flashErr == "" {
+			flashErr = fmt.Sprintf("edit target %q not found", editID)
+		}
 	}
 
 	data := struct {
-		Rows      []row
-		Edit      config.Item
-		Online    bool
-		StatusErr string
-		FlashErr  string
-		FlashOK   string
-		Addr      string
-		CfgPath   string
+		Rows           []row
+		Edit           config.Item
+		EditFound      bool
+		Online         bool
+		StatusErr      string
+		FlashErr       string
+		FlashOK        string
+		Addr           string
+		CfgPath        string
+		StartLabel     string
+		StopLabel      string
+		StartDisabled  bool
+		StopDisabled   bool
+		ReloadDisabled bool
+		PathEnv        string
 	}{
-		Rows:      rows,
-		Edit:      edit,
-		Online:    online,
-		StatusErr: statusErr,
-		FlashErr:  strings.TrimSpace(r.URL.Query().Get("error")),
-		FlashOK:   strings.TrimSpace(r.URL.Query().Get("ok")),
-		Addr:      s.ControlAddr,
-		CfgPath:   s.ConfigPath,
+		Rows:           rows,
+		Edit:           edit,
+		EditFound:      editFound,
+		Online:         online,
+		StatusErr:      statusErr,
+		FlashErr:       flashErr,
+		FlashOK:        strings.TrimSpace(r.URL.Query().Get("ok")),
+		Addr:           s.ControlAddr,
+		CfgPath:        s.ConfigPath,
+		StartLabel:     startLabel,
+		StopLabel:      stopLabel,
+		StartDisabled:  startDisabled,
+		StopDisabled:   stopDisabled,
+		ReloadDisabled: reloadDisabled,
+		PathEnv:        cfg.PathEnv,
 	}
 
 	if err := pageTmpl.Execute(w, data); err != nil {
@@ -164,6 +211,9 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	case "quick-add":
 		err = s.quickAdd(r)
 		okMsg = "item added"
+	case "save-path":
+		err = s.savePath(strings.TrimSpace(r.FormValue("path_env")))
+		okMsg = "PATH updated"
 	default:
 		err = fmt.Errorf("unknown action: %s", action)
 	}
@@ -173,6 +223,21 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/?ok="+urlEscape(okMsg), http.StatusSeeOther)
+}
+
+func (s *Server) savePath(pathEnv string) error {
+	cfg, err := config.Load(s.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if pathEnv == "" {
+		pathEnv = config.DefaultPathEnv()
+	}
+	cfg.PathEnv = pathEnv
+	if err := config.Save(s.ConfigPath, cfg); err != nil {
+		return err
+	}
+	return reloadIfRunning(s.ControlAddr)
 }
 
 func (s *Server) toggleItem(id string) error {
@@ -240,7 +305,6 @@ func (s *Server) saveItem(r *http.Request) error {
 		NoWindow:           r.FormValue("no_window") == "on",
 		StopBeforeCronExec: r.FormValue("stop_before_cron_exec") == "on",
 	}
-
 	if item.ID == "" {
 		item.ID = slug(item.ProcessName)
 	}
@@ -327,7 +391,7 @@ func (s *Server) quickAdd(r *http.Request) error {
 		item.OnlyOpenOnce = false
 		item.CronExpression = cronExpr
 		item.StopBeforeCronExec = true
-	default: // guard
+	default:
 		item.OnlyOpenOnce = false
 		item.CronExpression = ""
 		item.StopBeforeCronExec = true
@@ -405,8 +469,7 @@ func slug(s string) string {
 			lastDash = true
 		}
 	}
-	out := strings.Trim(b.String(), "-")
-	return out
+	return strings.Trim(b.String(), "-")
 }
 
 func urlEscape(s string) string {
@@ -426,6 +489,7 @@ h1{margin:0 0 12px 0}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 input[type=text],select{padding:7px;border:1px solid #c4cdd9;border-radius:6px;min-width:180px}
 button{padding:7px 11px;border:1px solid #8ba3c9;background:#1f6feb;color:#fff;border-radius:6px;cursor:pointer}
+button:disabled{background:#9aa4b2;border-color:#9aa4b2;cursor:not-allowed;opacity:.7}
 button.alt{background:#4b5563}
 button.warn{background:#b42318}
 table{border-collapse:collapse;width:100%}
@@ -439,6 +503,31 @@ code{background:#eef2ff;padding:2px 4px;border-radius:4px}
 label{margin-right:8px}
 .err{color:#b42318}
 </style>
+<script>
+function enablePathEdit(){
+  const input=document.getElementById('path_env');
+  const modify=document.getElementById('path_modify');
+  const save=document.getElementById('path_save');
+  const cancel=document.getElementById('path_cancel');
+  input.dataset.original=input.value;
+  input.readOnly=false;
+  modify.style.display='none';
+  save.style.display='inline-block';
+  cancel.style.display='inline-block';
+  input.focus();
+}
+function cancelPathEdit(){
+  const input=document.getElementById('path_env');
+  const modify=document.getElementById('path_modify');
+  const save=document.getElementById('path_save');
+  const cancel=document.getElementById('path_cancel');
+  if(input.dataset.original!==undefined){input.value=input.dataset.original;}
+  input.readOnly=true;
+  modify.style.display='inline-block';
+  save.style.display='none';
+  cancel.style.display='none';
+}
+</script>
 </head>
 <body>
 <h1>ProcessGodMac Dashboard</h1>
@@ -450,36 +539,47 @@ label{margin-right:8px}
 {{if .FlashErr}}<div class="err"><small>{{.FlashErr}}</small></div>{{end}}
 {{if .FlashOK}}<div><small><span class="tag ok">{{.FlashOK}}</span></small></div>{{end}}
 <div class="row" style="margin-top:8px">
-<form method="post" action="/action"><input type="hidden" name="action" value="start-daemon"><button>Start Daemon</button></form>
-<form method="post" action="/action"><input type="hidden" name="action" value="stop-daemon"><button class="warn">Stop Daemon</button></form>
-<form method="post" action="/action"><input type="hidden" name="action" value="reload"><button class="alt">Reload Config</button></form>
+<form method="post" action="/action"><input type="hidden" name="action" value="start-daemon"><button {{if .StartDisabled}}disabled{{end}}>{{.StartLabel}}</button></form>
+<form method="post" action="/action"><input type="hidden" name="action" value="stop-daemon"><button class="warn" {{if .StopDisabled}}disabled{{end}}>{{.StopLabel}}</button></form>
+<form method="post" action="/action"><input type="hidden" name="action" value="reload"><button class="alt" {{if .ReloadDisabled}}disabled{{end}}>Reload Config</button></form>
 </div>
 </div>
 
 <div class="card">
+<h3 style="margin-top:0">PATH</h3>
+<form method="post" action="/action" class="row">
+<input type="hidden" name="action" value="save-path">
+<input type="text" id="path_env" name="path_env" value="{{.PathEnv}}" readonly style="min-width:900px;flex:1">
+<button type="button" id="path_modify" class="alt" onclick="enablePathEdit()">modify</button>
+<button type="submit" id="path_save" style="display:none">save</button>
+<button type="button" id="path_cancel" class="warn" style="display:none" onclick="cancelPathEdit()">discard/cancel</button>
+</form>
+<small>This PATH is used to resolve command names like <code>ping</code>, <code>node</code>, <code>java</code>.</small>
+</div>
+
+<div class="card">
 <h3 style="margin-top:0">Quick Add (Recommended)</h3>
-<div><small>Use command name or full path. Examples: <code>ping</code>, <code>/usr/bin/python3</code>, <code>node</code>.</small></div>
+<div><small>Examples: command <code>ping</code> args <code>amazon.com</code>, or command <code>/usr/bin/python3</code>.</small></div>
 <form method="post" action="/action">
 <input type="hidden" name="action" value="quick-add">
 <div class="row" style="margin-top:8px">
-<input type="text" name="quick_name" placeholder="Name (e.g. My Bot)">
-<input type="text" name="quick_command" placeholder="Command (e.g. ping)">
-<input type="text" name="quick_args" placeholder="Arguments (e.g. amazon.com)">
+<input type="text" name="quick_name" placeholder="Name (e.g. Curl Test)">
+<input type="text" name="quick_command" placeholder="Command (e.g. curl)">
+<input type="text" name="quick_args" placeholder="Arguments (e.g. -L https://example.com)">
 <select name="quick_mode">
 <option value="guard">Always Guard (restart on crash)</option>
 <option value="once">Start Once</option>
 <option value="cron">Cron Restart</option>
 </select>
-<input type="text" name="quick_cron" placeholder="cron (only for Cron Restart)" value="0 1 * * *">
+<input type="text" name="quick_cron" placeholder="cron (for Cron Restart)" value="0 1 * * *">
 <button>Add Item</button>
 </div>
 </form>
 </div>
 
 <div class="card">
-<details>
-<summary><strong>Advanced Edit</strong> (for full fields)</summary>
-<form method="post" action="/action" style="margin-top:10px">
+<h3 style="margin-top:0">Edit Item {{if .EditFound}}: {{.Edit.ID}}{{end}}</h3>
+<form method="post" action="/action">
 <input type="hidden" name="action" value="save-item">
 <input type="hidden" name="original_id" value="{{.Edit.ID}}">
 <div class="row">
@@ -500,7 +600,6 @@ label{margin-right:8px}
 <a href="/" style="margin-left:6px">clear edit</a>
 </div>
 </form>
-</details>
 </div>
 
 <div class="card">
@@ -513,14 +612,14 @@ label{margin-right:8px}
 <td>{{.Item.ID}}</td>
 <td>{{.Item.ProcessName}}</td>
 <td><small>{{.Item.ExecPath}} {{.Item.StartupParams}}</small></td>
-<td><small>{{.Mode}}</small></td>
+<td><small>{{.ModeLabel}}</small></td>
 <td>{{.Item.Started}}</td>
 <td>{{if .Has}}{{.Status.Running}}{{else}}-{{end}}</td>
 <td>{{if .Has}}{{.Status.PID}}{{else}}-{{end}}</td>
 <td><small class="err">{{if .Has}}{{.Status.LastError}}{{end}}</small></td>
 <td>
 <a href="/?edit={{.Item.ID}}">edit</a> |
-<form method="post" action="/action" style="display:inline"><input type="hidden" name="action" value="toggle-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="alt" style="padding:2px 6px">toggle</button></form> |
+<form method="post" action="/action" style="display:inline"><input type="hidden" name="action" value="toggle-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="alt" style="padding:2px 6px">{{.ToggleLabel}}</button></form> |
 <form method="post" action="/action" style="display:inline" onsubmit="return confirm('delete {{.Item.ID}}?')"><input type="hidden" name="action" value="delete-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="warn" style="padding:2px 6px">delete</button></form> |
 <a href="/logs?id={{.Item.ID}}&lines=400" target="_blank">logs</a>
 </td>

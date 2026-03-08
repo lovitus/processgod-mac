@@ -46,7 +46,11 @@ func TestCronTriggeredRunWithoutAutoRestart(t *testing.T) {
 		return m.procs["cron-task"].running
 	})
 
-	time.Sleep(2500 * time.Millisecond)
+	waitFor(t, 6*time.Second, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return !m.procs["cron-task"].running
+	})
 	m.tick(match.Add(10 * time.Second))
 
 	m.mu.Lock()

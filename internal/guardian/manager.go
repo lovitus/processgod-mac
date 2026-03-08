@@ -40,6 +40,7 @@ type Status struct {
 type Manager struct {
 	mu           sync.Mutex
 	procs        map[string]*managed
+	pathEnv      string
 	tickInterval time.Duration
 	logger       *log.Logger
 }
@@ -64,6 +65,7 @@ func New(logger *log.Logger) *Manager {
 	}
 	return &Manager{
 		procs:        make(map[string]*managed),
+		pathEnv:      config.DefaultPathEnv(),
 		tickInterval: defaultTickInterval,
 		logger:       logger,
 	}
@@ -72,6 +74,10 @@ func New(logger *log.Logger) *Manager {
 func (m *Manager) Apply(cfg config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cfg.Normalize()
+
+	pathChanged := m.pathEnv != cfg.PathEnv
+	m.pathEnv = cfg.PathEnv
 
 	next := make(map[string]config.Item)
 	for _, it := range cfg.Items {
@@ -102,6 +108,14 @@ func (m *Manager) Apply(cfg config.Config) error {
 			existing.lastCronKey = ""
 			existing.lastError = ""
 			existing.cronSched = parseCron(it.CronExpression)
+		}
+	}
+
+	if pathChanged {
+		for _, p := range m.procs {
+			m.stopLocked(p)
+			p.startedOnce = false
+			p.lastCronKey = ""
 		}
 	}
 
@@ -220,7 +234,7 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 		p.lastError = "execPath is empty"
 		return
 	}
-	execPath, err := resolveExecPath(p.item.ExecPath, p.item.WorkingDir)
+	execPath, err := resolveExecPath(p.item.ExecPath, p.item.WorkingDir, m.pathEnv)
 	if err != nil {
 		p.lastError = err.Error()
 		return
@@ -232,9 +246,7 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	env := os.Environ()
-	if !hasPathEnv(env) {
-		env = append(env, "PATH="+defaultSearchPath())
-	}
+	env = setPathEnv(env, m.pathEnv)
 	if len(p.item.Env) > 0 {
 		for k, v := range p.item.Env {
 			env = append(env, k+"="+v)
@@ -275,7 +287,7 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 	go m.waitForExit(p, cmd)
 }
 
-func resolveExecPath(execPath, workingDir string) (string, error) {
+func resolveExecPath(execPath, workingDir, pathEnv string) (string, error) {
 	execPath = strings.TrimSpace(execPath)
 	if execPath == "" {
 		return "", fmt.Errorf("exec path is empty")
@@ -295,17 +307,9 @@ func resolveExecPath(execPath, workingDir string) (string, error) {
 		return "", fmt.Errorf("exec path not available: %s", execPath)
 	}
 
-	// Binary name mode: search PATH first.
-	if lp, err := exec.LookPath(execPath); err == nil {
+	// Binary name mode: search configured PATH first.
+	if lp, err := lookPathIn(execPath, pathEnv); err == nil {
 		return lp, nil
-	}
-
-	// Fallback common locations for launchd environments.
-	for _, dir := range strings.Split(defaultSearchPath(), ":") {
-		c := filepath.Join(dir, execPath)
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c, nil
-		}
 	}
 
 	return "", fmt.Errorf("executable %q not found in PATH", execPath)
@@ -320,8 +324,43 @@ func hasPathEnv(env []string) bool {
 	return false
 }
 
-func defaultSearchPath() string {
-	return "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+func setPathEnv(env []string, pathEnv string) []string {
+	if strings.TrimSpace(pathEnv) == "" {
+		pathEnv = config.DefaultPathEnv()
+	}
+	set := false
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			out = append(out, "PATH="+pathEnv)
+			set = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !set {
+		out = append(out, "PATH="+pathEnv)
+	}
+	return out
+}
+
+func lookPathIn(file, pathEnv string) (string, error) {
+	if strings.TrimSpace(pathEnv) == "" {
+		pathEnv = config.DefaultPathEnv()
+	}
+	for _, dir := range strings.Split(pathEnv, ":") {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, file)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	if lp, err := exec.LookPath(file); err == nil {
+		return lp, nil
+	}
+	return "", fmt.Errorf("not found in PATH")
 }
 
 func (m *Manager) waitForExit(p *managed, cmd *exec.Cmd) {

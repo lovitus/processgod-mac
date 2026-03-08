@@ -420,10 +420,12 @@ func (t *trayApp) onReady() {
 
 	statusItem := systray.AddMenuItem("Status: checking...", "Daemon status")
 	statusItem.Disable()
+	activeItem := systray.AddMenuItem("Active: checking...", "Active process count")
+	activeItem.Disable()
 	systray.AddSeparator()
 
-	startItem := systray.AddMenuItem("Start Guardian", "Start the guardian daemon")
-	stopItem := systray.AddMenuItem("Stop Guardian", "Stop the guardian daemon")
+	startItem := systray.AddMenuItem("Start Guardian (stopped)", "Start the guardian daemon")
+	stopItem := systray.AddMenuItem("Stop Guardian (stopped)", "Stop the guardian daemon")
 	reloadItem := systray.AddMenuItem("Reload Config", "Reload runtime config")
 	showStatusItem := systray.AddMenuItem("Show Status", "Show short summary notification")
 	openDashItem := systray.AddMenuItem("Open Dashboard", "Open web dashboard")
@@ -439,7 +441,7 @@ func (t *trayApp) onReady() {
 	}
 	_ = exec.Command("open", t.dashboard).Run()
 
-	go t.refreshStatus(statusItem)
+	go t.refreshStatus(statusItem, activeItem, startItem, stopItem, reloadItem, showStatusItem)
 
 	go func() {
 		for {
@@ -490,38 +492,54 @@ func (t *trayApp) ensureGuardianRunning() error {
 }
 
 func (t *trayApp) statusSummary() string {
-	resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
-	if err != nil || !resp.OK {
-		return "Guardian not running."
+	online, running, total := t.runtimeState()
+	if !online {
+		return "Guardian stopped."
 	}
-	if len(resp.Status) == 0 {
+	if total == 0 {
 		return "Guardian running. No started items configured."
 	}
+	return fmt.Sprintf("Guardian running. %d/%d items active.", running, total)
+}
 
-	running := 0
+func (t *trayApp) refreshStatus(statusItem, activeItem, startItem, stopItem, reloadItem, showStatusItem *systray.MenuItem) {
+	for {
+		online, running, total := t.runtimeState()
+
+		if online {
+			statusItem.SetTitle("Status: daemon running")
+			activeItem.SetTitle(fmt.Sprintf("Active: %d/%d", running, total))
+			startItem.SetTitle("Start Guardian (running)")
+			stopItem.SetTitle("Stop Guardian (running)")
+			startItem.Disable()
+			stopItem.Enable()
+			reloadItem.Enable()
+			showStatusItem.Enable()
+		} else {
+			statusItem.SetTitle("Status: daemon stopped")
+			activeItem.SetTitle("Active: 0/0")
+			startItem.SetTitle("Start Guardian (stopped)")
+			stopItem.SetTitle("Stop Guardian (stopped)")
+			startItem.Enable()
+			stopItem.Disable()
+			reloadItem.Disable()
+			showStatusItem.Disable()
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (t *trayApp) runtimeState() (online bool, running int, total int) {
+	resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
+	if err != nil || !resp.OK {
+		return false, 0, 0
+	}
+	total = len(resp.Status)
 	for _, st := range resp.Status {
 		if st.Running {
 			running++
 		}
 	}
-	return fmt.Sprintf("Guardian running. %d/%d items active.", running, len(resp.Status))
-}
-
-func (t *trayApp) refreshStatus(item *systray.MenuItem) {
-	for {
-		resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
-		if err != nil || !resp.OK {
-			item.SetTitle("Status: daemon offline")
-			time.Sleep(3 * time.Second)
-			continue
-		}
-		running := 0
-		for _, st := range resp.Status {
-			if st.Running {
-				running++
-			}
-		}
-		item.SetTitle(fmt.Sprintf("Status: online (%d/%d active)", running, len(resp.Status)))
-		time.Sleep(3 * time.Second)
-	}
+	return true, running, total
 }

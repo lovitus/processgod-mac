@@ -16,7 +16,8 @@ const (
 
 // Config is the root config model.
 type Config struct {
-	Items []Item `json:"items"`
+	PathEnv string `json:"pathEnv,omitempty"`
+	Items   []Item `json:"items"`
 }
 
 // Item defines a single guarded process.
@@ -87,7 +88,7 @@ func EnsureDefaultConfig() (string, error) {
 		return "", fmt.Errorf("stat config: %w", err)
 	}
 
-	cfg := Config{Items: []Item{}}
+	cfg := Config{PathEnv: DefaultPathEnv(), Items: []Item{}}
 	if err := Save(path, cfg); err != nil {
 		return "", err
 	}
@@ -137,9 +138,21 @@ func Save(path string, cfg Config) error {
 }
 
 func (c *Config) Normalize() {
+	c.PathEnv = strings.TrimSpace(c.PathEnv)
+	if c.PathEnv == "" {
+		c.PathEnv = DefaultPathEnv()
+	}
 	for i := range c.Items {
 		c.Items[i].Normalize()
 	}
+}
+
+// DefaultPathEnv returns the PATH used by daemon and child processes.
+func DefaultPathEnv() string {
+	if v := strings.TrimSpace(os.Getenv("PATH")); v != "" {
+		return v
+	}
+	return "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Users/fanli/.cargo/bin"
 }
 
 func (i *Item) Normalize() {
