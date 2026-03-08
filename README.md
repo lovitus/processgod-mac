@@ -28,7 +28,8 @@ If you open `ProcessGodMac.app` from Finder:
 
 - a menu bar tray icon (`PG`) is created
 - guardian is auto-started
-- tray menu can `Start/Stop/Reload/Show Status/Open Config/Quit`
+- tray menu can `Start/Stop/Reload/Show Status/Open Dashboard/Open Config/Quit`
+- dashboard auto-opens for full config management (add/edit/delete/toggle items + view logs)
 
 ## Service Mode (launchd)
 
@@ -88,7 +89,16 @@ export PROCESSGOD_HOME=/path/to/runtime-dir
 ./dist/processgod-mac reload
 ./dist/processgod-mac status
 ./dist/processgod-mac logs <id> --lines 200
+./dist/processgod-mac dashboard
 ```
+
+Dashboard provides original-app equivalent config workflow:
+
+- add/edit/delete guarded process items
+- toggle per-item guard state
+- start/stop daemon
+- reload config
+- view per-item in-memory logs
 
 ## Cron Semantics
 

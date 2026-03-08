@@ -18,6 +18,8 @@ import (
 	"github.com/getlantern/systray"
 	"github.com/lovitus/processgod-mac/internal/app"
 	"github.com/lovitus/processgod-mac/internal/config"
+	"github.com/lovitus/processgod-mac/internal/daemonctl"
+	"github.com/lovitus/processgod-mac/internal/dashboard"
 	"github.com/lovitus/processgod-mac/internal/guardian"
 	"github.com/lovitus/processgod-mac/internal/ipc"
 	"github.com/lovitus/processgod-mac/internal/service"
@@ -78,6 +80,8 @@ func run(args []string) error {
 		return runServiceCommand(args[1:])
 	case "config":
 		return runConfigCommand(configPath, args[1:])
+	case "dashboard":
+		return runDashboard(configPath, controlAddr, args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -100,13 +104,28 @@ func runAppMode(configPath, controlAddr string) error {
 	if err != nil {
 		return err
 	}
+	dashAddr := dashboardAddr()
 
 	t := &trayApp{
 		configPath:  configPath,
 		controlAddr: controlAddr,
 		exePath:     exe,
 		workDir:     workDir,
+		dashAddr:    dashAddr,
+		dashboard:   "http://" + dashAddr,
 	}
+	go func() {
+		s := &dashboard.Server{
+			Addr:        dashAddr,
+			ConfigPath:  configPath,
+			ControlAddr: controlAddr,
+			ExePath:     exe,
+			WorkDir:     workDir,
+		}
+		if err := s.Run(false); err != nil {
+			log.Printf("dashboard server stopped: %v", err)
+		}
+	}()
 	systray.Run(t.onReady, t.onExit)
 	return nil
 }
@@ -117,28 +136,6 @@ func launchedFromAppBundle() bool {
 		return false
 	}
 	return strings.Contains(exe, ".app/Contents/MacOS/")
-}
-
-func startDaemonDetached(exePath, workDir string) error {
-	logPath := filepath.Join(workDir, "app-launch.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open daemon log: %w", err)
-	}
-
-	cmd := exec.Command(exePath, "daemon")
-	cmd.Dir = workDir
-	cmd.Stdout = f
-	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("start detached daemon: %w", err)
-	}
-	_ = cmd.Process.Release()
-	_ = f.Close()
-	return nil
 }
 
 func notify(title, message string) {
@@ -300,6 +297,52 @@ func runConfigCommand(configPath string, args []string) error {
 	}
 }
 
+func runDashboard(configPath, controlAddr string, args []string) error {
+	addr := dashboardAddr()
+	openBrowser := true
+
+	for _, a := range args {
+		if strings.HasPrefix(a, "--addr=") {
+			addr = strings.TrimSpace(strings.TrimPrefix(a, "--addr="))
+		}
+		if a == "--no-open" {
+			openBrowser = false
+		}
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		exe = strings.TrimSpace(exe)
+	}
+
+	workDir, err := config.EnsureAppSupportDir()
+	if err != nil {
+		return err
+	}
+
+	s := &dashboard.Server{
+		Addr:        addr,
+		ConfigPath:  configPath,
+		ControlAddr: controlAddr,
+		ExePath:     exe,
+		WorkDir:     workDir,
+	}
+
+	fmt.Printf("dashboard listening on http://%s\n", addr)
+	return s.Run(openBrowser)
+}
+
+func dashboardAddr() string {
+	if v := strings.TrimSpace(os.Getenv("PROCESSGOD_DASH_ADDR")); v != "" {
+		return v
+	}
+	return "127.0.0.1:51090"
+}
+
 func writeSampleConfig(path string) error {
 	sample := config.Config{Items: []config.Item{
 		{
@@ -353,6 +396,7 @@ Usage:
   processgod status
   processgod logs <id> [--lines N]
   processgod config <init|path|validate|sample>
+  processgod dashboard [--addr=127.0.0.1:51090] [--no-open]
   processgod service <install|start|stop|status|uninstall> [--system]
   processgod version
 
@@ -366,6 +410,8 @@ type trayApp struct {
 	controlAddr string
 	exePath     string
 	workDir     string
+	dashAddr    string
+	dashboard   string
 }
 
 func (t *trayApp) onReady() {
@@ -380,6 +426,7 @@ func (t *trayApp) onReady() {
 	stopItem := systray.AddMenuItem("Stop Guardian", "Stop the guardian daemon")
 	reloadItem := systray.AddMenuItem("Reload Config", "Reload runtime config")
 	showStatusItem := systray.AddMenuItem("Show Status", "Show short summary notification")
+	openDashItem := systray.AddMenuItem("Open Dashboard", "Open web dashboard")
 	openConfigItem := systray.AddMenuItem("Open Config", "Open config.json")
 	openLogsItem := systray.AddMenuItem("Open Launch Log", "Open app-launch.log")
 	systray.AddSeparator()
@@ -390,6 +437,7 @@ func (t *trayApp) onReady() {
 	} else {
 		notify("ProcessGodMac", "Guardian is running.")
 	}
+	_ = exec.Command("open", t.dashboard).Run()
 
 	go t.refreshStatus(statusItem)
 
@@ -403,13 +451,8 @@ func (t *trayApp) onReady() {
 					notify("ProcessGodMac", "Guardian started.")
 				}
 			case <-stopItem.ClickedCh:
-				stoppedByService := false
-				if err := service.Stop(false); err == nil {
-					stoppedByService = true
-				}
-				_, shutdownErr := ipc.Send(t.controlAddr, ipc.Request{Action: "shutdown"})
-				if !stoppedByService && shutdownErr != nil {
-					notify("ProcessGodMac", "Stop failed: "+shutdownErr.Error())
+				if err := daemonctl.Stop(t.controlAddr); err != nil {
+					notify("ProcessGodMac", "Stop failed: "+err.Error())
 				} else {
 					notify("ProcessGodMac", "Guardian stopped.")
 				}
@@ -426,6 +469,8 @@ func (t *trayApp) onReady() {
 				notify("ProcessGodMac", "Config reloaded.")
 			case <-showStatusItem.ClickedCh:
 				notify("ProcessGodMac", t.statusSummary())
+			case <-openDashItem.ClickedCh:
+				_ = exec.Command("open", t.dashboard).Run()
 			case <-openConfigItem.ClickedCh:
 				_ = exec.Command("open", t.configPath).Run()
 			case <-openLogsItem.ClickedCh:
@@ -441,32 +486,7 @@ func (t *trayApp) onReady() {
 func (t *trayApp) onExit() {}
 
 func (t *trayApp) ensureGuardianRunning() error {
-	if resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
-		return nil
-	}
-	if err := service.Install(t.exePath, t.workDir, false); err == nil {
-		if err := t.waitPing(6 * time.Second); err == nil {
-			return nil
-		}
-	}
-	if err := startDaemonDetached(t.exePath, t.workDir); err != nil {
-		return err
-	}
-	if err := t.waitPing(4 * time.Second); err != nil {
-		return fmt.Errorf("daemon failed to start; check %s", filepath.Join(t.workDir, "app-launch.log"))
-	}
-	return nil
-}
-
-func (t *trayApp) waitPing(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
-			return nil
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("daemon did not answer ping within %s", timeout)
+	return daemonctl.EnsureRunning(t.controlAddr, t.exePath, t.workDir)
 }
 
 func (t *trayApp) statusSummary() string {
