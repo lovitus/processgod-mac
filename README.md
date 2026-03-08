@@ -24,7 +24,11 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 ./dist/processgod-mac daemon
 ```
 
-If you open `ProcessGodMac.app` from Finder, it now auto-starts the guardian in background mode and shows a macOS notification.
+If you open `ProcessGodMac.app` from Finder:
+
+- a menu bar tray icon (`PG`) is created
+- guardian is auto-started
+- tray menu can `Start/Stop/Reload/Show Status/Open Config/Quit`
 
 ## Service Mode (launchd)
 

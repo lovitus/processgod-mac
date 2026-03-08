@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,8 @@ type Daemon struct {
 	controlAddr string
 	manager     *guardian.Manager
 	logger      *log.Logger
+	stopOnce    sync.Once
+	stopFunc    func()
 }
 
 func NewDaemon(configPath, controlAddr string) *Daemon {
@@ -45,6 +48,18 @@ func (d *Daemon) Statuses() []guardian.Status {
 
 func (d *Daemon) Logs(id string, lines int) (string, error) {
 	return d.manager.Logs(id, lines)
+}
+
+func (d *Daemon) SetStopFunc(fn func()) {
+	d.stopFunc = fn
+}
+
+func (d *Daemon) Shutdown() error {
+	if d.stopFunc == nil {
+		return errors.New("stop function is not configured")
+	}
+	d.stopOnce.Do(d.stopFunc)
+	return nil
 }
 
 func (d *Daemon) Run(stop <-chan struct{}) error {

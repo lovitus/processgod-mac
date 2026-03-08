@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/getlantern/systray"
 	"github.com/lovitus/processgod-mac/internal/app"
 	"github.com/lovitus/processgod-mac/internal/config"
 	"github.com/lovitus/processgod-mac/internal/guardian"
@@ -85,11 +87,6 @@ func run(args []string) error {
 }
 
 func runAppMode(configPath, controlAddr string) error {
-	if resp, err := ipc.Send(controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
-		notify("ProcessGodMac", "Guardian is already running.")
-		return nil
-	}
-
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
@@ -104,22 +101,13 @@ func runAppMode(configPath, controlAddr string) error {
 		return err
 	}
 
-	if err := service.Install(exe, workDir, false); err == nil {
-		msg := fmt.Sprintf("Service started. Config: %s", configPath)
-		notify("ProcessGodMac", msg)
-		return nil
+	t := &trayApp{
+		configPath:  configPath,
+		controlAddr: controlAddr,
+		exePath:     exe,
+		workDir:     workDir,
 	}
-
-	// Fallback when launchd bootstrap isn't available in the current session.
-	if err := startDaemonDetached(exe, workDir); err != nil {
-		return err
-	}
-
-	time.Sleep(400 * time.Millisecond)
-	if resp, err := ipc.Send(controlAddr, ipc.Request{Action: "ping"}); err != nil || !resp.OK {
-		return fmt.Errorf("daemon failed to start; check %s", filepath.Join(workDir, "app-launch.log"))
-	}
-	notify("ProcessGodMac", "Guardian started in background mode.")
+	systray.Run(t.onReady, t.onExit)
 	return nil
 }
 
@@ -167,12 +155,19 @@ func appleScriptQuote(s string) string {
 func runDaemon(configPath, controlAddr string) error {
 	d := app.NewDaemon(configPath, controlAddr)
 	stop := make(chan struct{})
+	var once sync.Once
+	closeStop := func() {
+		once.Do(func() {
+			close(stop)
+		})
+	}
+	d.SetStopFunc(closeStop)
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		close(stop)
+		closeStop()
 	}()
 
 	return d.Run(stop)
@@ -352,7 +347,7 @@ func printUsage() {
 	fmt.Println(`processgod-mac - macOS process guardian
 
 Usage:
-  processgod   (inside .app: starts background guardian service)
+  processgod   (inside .app: opens tray app and starts guardian)
   processgod daemon
   processgod reload
   processgod status
@@ -364,4 +359,149 @@ Usage:
 Notes:
   --system installs a LaunchDaemon in /Library/LaunchDaemons (boot startup, requires sudo).
   Without --system, service commands target a user LaunchAgent.`)
+}
+
+type trayApp struct {
+	configPath  string
+	controlAddr string
+	exePath     string
+	workDir     string
+}
+
+func (t *trayApp) onReady() {
+	systray.SetTitle("PG")
+	systray.SetTooltip("ProcessGodMac")
+
+	statusItem := systray.AddMenuItem("Status: checking...", "Daemon status")
+	statusItem.Disable()
+	systray.AddSeparator()
+
+	startItem := systray.AddMenuItem("Start Guardian", "Start the guardian daemon")
+	stopItem := systray.AddMenuItem("Stop Guardian", "Stop the guardian daemon")
+	reloadItem := systray.AddMenuItem("Reload Config", "Reload runtime config")
+	showStatusItem := systray.AddMenuItem("Show Status", "Show short summary notification")
+	openConfigItem := systray.AddMenuItem("Open Config", "Open config.json")
+	openLogsItem := systray.AddMenuItem("Open Launch Log", "Open app-launch.log")
+	systray.AddSeparator()
+	quitItem := systray.AddMenuItem("Quit Tray", "Quit tray app")
+
+	if err := t.ensureGuardianRunning(); err != nil {
+		notify("ProcessGodMac", "Start failed: "+err.Error())
+	} else {
+		notify("ProcessGodMac", "Guardian is running.")
+	}
+
+	go t.refreshStatus(statusItem)
+
+	go func() {
+		for {
+			select {
+			case <-startItem.ClickedCh:
+				if err := t.ensureGuardianRunning(); err != nil {
+					notify("ProcessGodMac", "Start failed: "+err.Error())
+				} else {
+					notify("ProcessGodMac", "Guardian started.")
+				}
+			case <-stopItem.ClickedCh:
+				stoppedByService := false
+				if err := service.Stop(false); err == nil {
+					stoppedByService = true
+				}
+				_, shutdownErr := ipc.Send(t.controlAddr, ipc.Request{Action: "shutdown"})
+				if !stoppedByService && shutdownErr != nil {
+					notify("ProcessGodMac", "Stop failed: "+shutdownErr.Error())
+				} else {
+					notify("ProcessGodMac", "Guardian stopped.")
+				}
+			case <-reloadItem.ClickedCh:
+				resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "reload"})
+				if err != nil {
+					notify("ProcessGodMac", "Reload failed: "+err.Error())
+					continue
+				}
+				if !resp.OK {
+					notify("ProcessGodMac", "Reload failed: "+resp.Error)
+					continue
+				}
+				notify("ProcessGodMac", "Config reloaded.")
+			case <-showStatusItem.ClickedCh:
+				notify("ProcessGodMac", t.statusSummary())
+			case <-openConfigItem.ClickedCh:
+				_ = exec.Command("open", t.configPath).Run()
+			case <-openLogsItem.ClickedCh:
+				_ = exec.Command("open", filepath.Join(t.workDir, "app-launch.log")).Run()
+			case <-quitItem.ClickedCh:
+				systray.Quit()
+				return
+			}
+		}
+	}()
+}
+
+func (t *trayApp) onExit() {}
+
+func (t *trayApp) ensureGuardianRunning() error {
+	if resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
+		return nil
+	}
+	if err := service.Install(t.exePath, t.workDir, false); err == nil {
+		if err := t.waitPing(6 * time.Second); err == nil {
+			return nil
+		}
+	}
+	if err := startDaemonDetached(t.exePath, t.workDir); err != nil {
+		return err
+	}
+	if err := t.waitPing(4 * time.Second); err != nil {
+		return fmt.Errorf("daemon failed to start; check %s", filepath.Join(t.workDir, "app-launch.log"))
+	}
+	return nil
+}
+
+func (t *trayApp) waitPing(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "ping"}); err == nil && resp.OK {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon did not answer ping within %s", timeout)
+}
+
+func (t *trayApp) statusSummary() string {
+	resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
+	if err != nil || !resp.OK {
+		return "Guardian not running."
+	}
+	if len(resp.Status) == 0 {
+		return "Guardian running. No started items configured."
+	}
+
+	running := 0
+	for _, st := range resp.Status {
+		if st.Running {
+			running++
+		}
+	}
+	return fmt.Sprintf("Guardian running. %d/%d items active.", running, len(resp.Status))
+}
+
+func (t *trayApp) refreshStatus(item *systray.MenuItem) {
+	for {
+		resp, err := ipc.Send(t.controlAddr, ipc.Request{Action: "status"})
+		if err != nil || !resp.OK {
+			item.SetTitle("Status: daemon offline")
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		running := 0
+		for _, st := range resp.Status {
+			if st.Running {
+				running++
+			}
+		}
+		item.SetTitle(fmt.Sprintf("Status: online (%d/%d active)", running, len(resp.Status)))
+		time.Sleep(3 * time.Second)
+	}
 }

@@ -28,6 +28,7 @@ type Handler interface {
 	Reload() error
 	Statuses() []guardian.Status
 	Logs(id string, lines int) (string, error)
+	Shutdown() error
 }
 
 type Server struct {
@@ -109,6 +110,11 @@ func (s *Server) dispatch(req Request) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true, Logs: logs}
+	case "shutdown":
+		if err := s.handler.Shutdown(); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Message: "shutdown requested"}
 	default:
 		return Response{OK: false, Error: "unknown action"}
 	}
