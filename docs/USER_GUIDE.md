@@ -14,28 +14,43 @@ To enable pre-login startup:
 sudo /Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac service install --system
 ```
 
-## 2) Dashboard
+## 2) Menu Bar
+
+Opening `ProcessGodMac.app` creates the `PG` menu bar item. It does not open a browser automatically.
+
+The menu shows every configured process. Each process submenu provides:
+
+- current state and PID
+- enable guard / disable guard and stop
+- restart now
+- view memory logs
+- edit
+- delete with native confirmation
+
+The `Startup` submenu installs user mode (after login), system mode (before login), or removes automatic startup.
+
+## 3) Process Manager
 
 Open:
 
-- auto-open from tray, or
+- `Manage Processes...` from the tray, or
 - `http://127.0.0.1:51090/`
 
-### Quick Add (recommended)
+The manager uses a process list and one add/edit inspector. Daily controls stay on each process row.
+
+### Add / Edit
 
 Fields:
 
 - Name: display name
 - Command: command name or absolute path
 - Arguments: command args
-- Mode:
-  - Always Guard: restart on crash
-  - Start Once: run once only
-  - Cron Restart: run/restart by cron
+- Always Guard: restart after exit
+- Start Once: run once only
+- Cron Run: start only when cron matches
+- Cron Restart: continuously guard and force restart when cron matches
 
-### Advanced Add
-
-Use all raw fields (`id`, `exec_path`, `cron_expression`, flags).
+Stable ID, working directory, no-window, and minimize settings are under `Advanced options`.
 
 ### PATH Editor
 
@@ -47,14 +62,15 @@ Dashboard has PATH textbox with:
 
 Saved PATH is used by daemon for command lookup.
 
-## 3) Item Controls
+## 4) Item Controls
 
-- `edit`: load item into Edit form
-- `toggle(started|stopped)`: enable/disable guarding for that item
+- `Start` / `Stop`: enable or disable guarding
+- `Restart`: stop and immediately start an enabled process
+- `Edit`: load the item into the inspector
 - `delete`
 - `logs`: open memory-only logs
 
-## 4) Logs (Memory-only)
+## 5) Logs (Memory-only)
 
 Per task buffers:
 

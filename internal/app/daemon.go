@@ -59,6 +59,10 @@ func (d *Daemon) Logs(id string, lines int) (string, error) {
 	return d.manager.Logs(id, lines)
 }
 
+func (d *Daemon) Restart(id string) error {
+	return d.manager.Restart(id)
+}
+
 func (d *Daemon) RuntimeInfo() (string, string) {
 	return d.level, d.levelHint
 }

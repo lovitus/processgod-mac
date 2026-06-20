@@ -28,9 +28,10 @@ If you open `ProcessGodMac.app` from Finder:
 
 - a menu bar tray icon (`PG`) is created
 - guardian is auto-started
-- tray menu can `Start/Stop/Reload/Show Status/Open Dashboard/Open Config/Quit`
-- dashboard auto-opens for full config management (add/edit/delete/toggle items + view logs)
-- tray shows daemon service level (`user` / `system` / `manual`) and hint for switching to system mode
+- the app stays in the menu bar and does not open a browser on startup
+- every configured process appears in the tray with status, PID, enable/disable, restart, logs, edit, and delete actions
+- startup mode can be changed from the tray (`user` after login / `system` before login)
+- `Add Process` and `Manage Processes` open the focused manager only when requested
 
 ## Service Mode (launchd)
 
@@ -100,18 +101,16 @@ Additional docs:
 - [User Guide](docs/USER_GUIDE.md)
 - [Operations](docs/OPERATIONS.md)
 
-Dashboard provides original-app equivalent config workflow:
+The process manager follows the original ProcessGuard workflow:
 
-- add/edit/delete guarded process items
-- toggle per-item guard state
+- process list on the left and one focused add/edit inspector on the right
+- row-level enable/disable, restart, logs, edit, and delete actions
+- behavior selector for Always Guard, Start Once, Cron Run, and Cron Restart
 - start/stop daemon
 - reload config
-- view per-item in-memory logs
-- quick-add guided form for non-technical users
 - command-name support via PATH lookup (e.g. `ping`, `node`, `java`)
-- advanced add form for full-field input
-- daemon level + system-mode hint shown in dashboard header
-- PATH editor with `modify` / `save` / `discard/cancel`
+- advanced fields remain available in a collapsible section
+- responsive desktop and mobile layout
 
 Log retention policy (memory-only, no disk log files):
 
@@ -141,6 +140,7 @@ Output naming format:
 
 - `processgod-mac-<version>-<channel>.dmg`
 - example: `processgod-mac-0.1.0-dev.dmg`
+- the DMG contains an ad-hoc signed app and an `Applications` shortcut for drag-to-install
 
 ## Config Schema
 

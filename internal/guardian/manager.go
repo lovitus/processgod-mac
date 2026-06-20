@@ -182,6 +182,28 @@ func (m *Manager) Logs(id string, lines int) (string, error) {
 	return p.logs.Render(lines), nil
 }
 
+func (m *Manager) Restart(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, ok := m.procs[id]
+	if !ok {
+		return fmt.Errorf("process id %q is not enabled", id)
+	}
+	if p.running {
+		m.stopLocked(p)
+	}
+	p.startedOnce = false
+	m.startLocked(p, time.Now())
+	if !p.running {
+		if p.lastError != "" {
+			return errors.New(p.lastError)
+		}
+		return fmt.Errorf("process id %q did not start", id)
+	}
+	return nil
+}
+
 func (m *Manager) tick(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

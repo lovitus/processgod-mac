@@ -30,6 +30,7 @@ type Handler interface {
 	Reload() error
 	Statuses() []guardian.Status
 	Logs(id string, lines int) (string, error)
+	Restart(id string) error
 	Shutdown() error
 	RuntimeInfo() (level string, hint string)
 }
@@ -114,6 +115,11 @@ func (s *Server) dispatch(req Request) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true, Logs: logs}
+	case "restart":
+		if err := s.handler.Restart(req.ID); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Message: "restarted"}
 	case "shutdown":
 		if err := s.handler.Shutdown(); err != nil {
 			return Response{OK: false, Error: err.Error()}

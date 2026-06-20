@@ -28,12 +28,13 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 
 - 会创建菜单栏托盘图标（`PG`）
 - 自动启动守护进程
-- 可在托盘菜单执行 `Start/Stop/Reload/Show Status/Open Dashboard/Open Config/Quit`
-- 会自动打开 Dashboard，可完整管理配置（新增/编辑/删除/启停单项/查看日志）
-- Dashboard 提供 Quick Add 简化表单，适合非技术用户
+- 启动后只驻留菜单栏，不再自动弹出浏览器
+- 每个进程直接显示在托盘菜单中，可查看状态/PID、启停守护、立即重启、查看日志、编辑和删除
+- 托盘内可切换用户级启动（登录后）和系统级启动（登录前，需要管理员授权）
+- 只有点击“新增进程”或“管理进程”时才打开管理页面
+- 管理页面采用类似原版 ProcessGuard 的左侧进程列表 + 右侧单一编辑器，不再堆叠多个表单
 - 支持直接填写命令名（例如 `ping`、`node`、`java`），无需绝对路径
-- 保留 Advanced Add（完整字段）表单
-- 托盘和 Dashboard 均显示 daemon 级别（`user`/`system`/`manual`）以及切换 system 模式提示
+- 运行模式可直接选择：持续守护、仅运行一次、Cron 启动、Cron 重启
 
 日志保留策略：
 
@@ -41,6 +42,7 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 - 每个任务分为 2 个内存环形缓冲：
 - `error_warning` 保留最近 `100` 行
 - `standard_other` 保留最近 `20` 行
+- 每行最多缓存 `4096` 字节
 - 日志输出带行号（`E#<n>` / `S#<n>`）和缓冲区统计
 - 超出后按环形覆盖，不写入磁盘
 
@@ -89,3 +91,5 @@ export PROCESSGOD_HOME=/path/to/runtime-dir
 ```
 
 输出示例：`processgod-mac-0.1.0-dev.dmg`
+
+DMG 内包含已自签名的应用和 `Applications` 快捷入口，可直接拖入安装。

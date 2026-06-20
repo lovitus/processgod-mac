@@ -49,8 +49,11 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+codesign --force --deep --sign - --timestamp=none "${APP_DIR}"
+
 cp -R "${APP_DIR}" "${STAGE_DIR}/"
 cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
+ln -s /Applications "${STAGE_DIR}/Applications"
 
 hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_PATH}" >/tmp/processgod_dmg.log
 

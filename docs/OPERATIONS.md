@@ -34,6 +34,8 @@ processgod-mac logs <id> --lines 50
 processgod-mac dashboard
 ```
 
+The menu bar provides the same daily operations without CLI use: daemon start/stop, per-process enable/disable, restart, logs, edit, and delete.
+
 ## Log Memory Limits
 
 - Logs are memory-only (no disk file logging for guarded tasks).

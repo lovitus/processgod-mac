@@ -12,6 +12,7 @@ func TestRenderPlistIncludesDaemonArgs(t *testing.T) {
 		"<string>daemon</string>",
 		"<string>/tmp</string>",
 		"<string>com.lovitus.processgod.mac</string>",
+		"<key>PROCESSGOD_HOME</key>",
 	}
 	for _, c := range checks {
 		if !strings.Contains(plist, c) {

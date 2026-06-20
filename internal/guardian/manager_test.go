@@ -126,6 +126,32 @@ func TestCronRestartTriggersOncePerMinute(t *testing.T) {
 	}
 }
 
+func TestRestartStartsNewProcess(t *testing.T) {
+	m := New(log.New(os.Stdout, "", 0))
+	t.Cleanup(m.shutdown)
+
+	script := writeScript(t, "#!/bin/sh\nwhile true; do sleep 1; done\n")
+	cfg := config.Config{Items: []config.Item{{
+		ID:       "manual-restart",
+		ExecPath: script,
+		Started:  true,
+		NoWindow: true,
+	}}}
+	if err := m.Apply(cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	m.tick(time.Now())
+	pid1 := waitPID(t, m, "manual-restart")
+
+	if err := m.Restart("manual-restart"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	pid2 := waitPID(t, m, "manual-restart")
+	if pid2 == pid1 {
+		t.Fatalf("expected a new pid, still %d", pid1)
+	}
+}
+
 func writeScript(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "run.sh")

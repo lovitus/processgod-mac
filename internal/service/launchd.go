@@ -55,17 +55,49 @@ func Install(binaryPath, workingDir string, system bool) error {
 }
 
 func Start(system bool) error {
+	if system && os.Geteuid() != 0 {
+		return fmt.Errorf("system start requires root (run with sudo)")
+	}
 	domain := launchDomain(system)
+	if err := runLaunchctl("kickstart", "-k", domain+"/"+Label); err == nil {
+		return nil
+	}
+	plist, err := plistPath(system)
+	if err != nil {
+		return err
+	}
+	if !Installed(system) {
+		return fmt.Errorf("service is not installed: %s", plist)
+	}
+	_ = runLaunchctl("bootout", domain, plist)
+	if err := runLaunchctl("bootstrap", domain, plist); err != nil {
+		return err
+	}
+	if err := runLaunchctl("enable", domain+"/"+Label); err != nil {
+		return err
+	}
 	return runLaunchctl("kickstart", "-k", domain+"/"+Label)
 }
 
 func Stop(system bool) error {
+	if system && os.Geteuid() != 0 {
+		return fmt.Errorf("system stop requires root (run with sudo)")
+	}
 	plist, err := plistPath(system)
 	if err != nil {
 		return err
 	}
 	domain := launchDomain(system)
 	return runLaunchctl("bootout", domain, plist)
+}
+
+func Installed(system bool) bool {
+	plist, err := plistPath(system)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(plist)
+	return err == nil
 }
 
 func Uninstall(system bool) error {
@@ -133,6 +165,11 @@ func renderPlist(binaryPath, workingDir string) string {
   </array>
   <key>WorkingDirectory</key>
   <string>` + escapedWorkDir + `</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PROCESSGOD_HOME</key>
+    <string>` + escapedWorkDir + `</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
