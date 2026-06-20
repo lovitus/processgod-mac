@@ -10,6 +10,19 @@ import (
 	"github.com/lovitus/processgod-mac/internal/config"
 )
 
+func TestTranslationCatalogsHaveMatchingKeys(t *testing.T) {
+	for key := range en {
+		if _, ok := zhCN[key]; !ok {
+			t.Errorf("missing zh-CN translation for %q", key)
+		}
+	}
+	for key := range zhCN {
+		if _, ok := en[key]; !ok {
+			t.Errorf("missing English translation for %q", key)
+		}
+	}
+}
+
 func TestSaveItemMapsBehaviorMode(t *testing.T) {
 	tests := []struct {
 		mode        string
@@ -76,6 +89,43 @@ func TestNewProcessDefaultsToAlwaysGuard(t *testing.T) {
 	}
 	if !strings.Contains(body, "New Process") || !strings.Contains(body, "Processes") {
 		t.Fatalf("manager layout missing expected sections")
+	}
+}
+
+func TestChineseLanguageFromBrowserAndCookie(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Config{}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	s := &Server{ConfigPath: path, ControlAddr: "127.0.0.1:1"}
+
+	req := httptest.NewRequest("GET", "/?new=1&ok=process_restarted", nil)
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	w := httptest.NewRecorder()
+	s.handleIndex(w, req)
+	body := w.Body.String()
+	for _, expected := range []string{`<html lang="zh-CN">`, "新增进程", "持续守护 - 退出后自动重启", "进程已重启"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("Chinese page missing %q", expected)
+		}
+	}
+
+	languageReq := httptest.NewRequest("GET", "/language?lang=zh-CN&next=%2F%3Fnew%3D1", nil)
+	languageW := httptest.NewRecorder()
+	s.handleLanguage(languageW, languageReq)
+	if languageW.Code != 303 || languageW.Header().Get("Location") != "/?new=1" {
+		t.Fatalf("unexpected language redirect: status=%d location=%q", languageW.Code, languageW.Header().Get("Location"))
+	}
+	result := languageW.Result()
+	defer result.Body.Close()
+	foundCookie := false
+	for _, cookie := range result.Cookies() {
+		if cookie.Name == languageCookie && cookie.Value == "zh-CN" {
+			foundCookie = true
+		}
+	}
+	if !foundCookie {
+		t.Fatalf("language cookie was not set")
 	}
 }
 

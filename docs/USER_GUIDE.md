@@ -38,6 +38,8 @@ Open:
 
 The manager uses a process list and one add/edit inspector. Daily controls stay on each process row.
 
+The top-right language switcher supports English and Simplified Chinese. The initial language follows the browser, and a manual selection is stored in a cookie.
+
 ### Add / Edit
 
 Fields:

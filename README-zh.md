@@ -33,6 +33,7 @@ GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac 
 - 托盘内可切换用户级启动（登录后）和系统级启动（登录前，需要管理员授权）
 - 只有点击“新增进程”或“管理进程”时才打开管理页面
 - 管理页面采用类似原版 ProcessGuard 的左侧进程列表 + 右侧单一编辑器，不再堆叠多个表单
+- 网页支持 English / 简体中文，首次访问自动读取浏览器语言，手动选择后会保持
 - 支持直接填写命令名（例如 `ping`、`node`、`java`），无需绝对路径
 - 运行模式可直接选择：持续守护、仅运行一次、Cron 启动、Cron 重启
 

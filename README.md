@@ -104,6 +104,7 @@ Additional docs:
 The process manager follows the original ProcessGuard workflow:
 
 - process list on the left and one focused add/edit inspector on the right
+- English and Simplified Chinese UI with browser detection and a persistent language switcher
 - row-level enable/disable, restart, logs, edit, and delete actions
 - behavior selector for Always Guard, Start Once, Cron Run, and Cron Restart
 - start/stop daemon

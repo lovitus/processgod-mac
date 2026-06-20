@@ -42,6 +42,7 @@ func (s *Server) Run(openBrowser bool) error {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/action", s.handleAction)
 	mux.HandleFunc("/logs", s.handleLogs)
+	mux.HandleFunc("/language", s.handleLanguage)
 
 	if openBrowser {
 		go func() {
@@ -54,6 +55,7 @@ func (s *Server) Run(openBrowser bool) error {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	loc := localizerForRequest(r)
 	cfg, err := config.Load(s.ConfigPath)
 	if err != nil {
 		http.Error(w, "load config: "+err.Error(), http.StatusInternalServerError)
@@ -75,7 +77,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	statuses, online, statusErr, level, levelHint := queryStatus(s.ControlAddr)
+	statuses, online, statusErr, level, _ := queryStatus(s.ControlAddr)
 	statusByID := make(map[string]guardian.Status, len(statuses))
 	for _, st := range statuses {
 		statusByID[st.ID] = st
@@ -85,16 +87,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	rows := make([]row, 0, len(cfg.Items))
 	for _, it := range cfg.Items {
 		st, ok := statusByID[it.ID]
-		toggleLabel := "Start"
+		toggleLabel := loc.T("start")
 		if it.Started {
-			toggleLabel = "Stop"
+			toggleLabel = loc.T("stop")
 		}
-		stateLabel, stateClass := itemState(it, st, ok, online)
+		stateLabel, stateClass := itemState(it, st, ok, online, loc)
 		rows = append(rows, row{
 			Item:        it,
 			Status:      st,
 			Has:         ok,
-			ModeLabel:   modeLabel(it),
+			ModeLabel:   modeLabel(it, loc),
 			ToggleLabel: toggleLabel,
 			StateLabel:  stateLabel,
 			StateClass:  stateClass,
@@ -129,7 +131,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	flashErr := strings.TrimSpace(r.URL.Query().Get("error"))
 	if !editFound && editID != "" {
 		if flashErr == "" {
-			flashErr = fmt.Sprintf("edit target %q not found", editID)
+			flashErr = loc.Format("edit_target_not_found", editID)
 		}
 	}
 
@@ -156,6 +158,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		RunningCount    int
 		EnabledCount    int
 		ConfiguredCount int
+		Lang            string
+		L               localizer
+		Summary         string
+		ServiceMode     string
+		CurrentURL      string
 	}{
 		Rows:            rows,
 		Edit:            edit,
@@ -163,7 +170,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Online:          online,
 		StatusErr:       statusErr,
 		FlashErr:        flashErr,
-		FlashOK:         strings.TrimSpace(r.URL.Query().Get("ok")),
+		FlashOK:         loc.T(strings.TrimSpace(r.URL.Query().Get("ok"))),
 		Addr:            s.ControlAddr,
 		CfgPath:         s.ConfigPath,
 		StartLabel:      startLabel,
@@ -173,17 +180,35 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		ReloadDisabled:  reloadDisabled,
 		PathEnv:         cfg.PathEnv,
 		ServiceLevel:    level,
-		ServiceHint:     levelHint,
+		ServiceHint:     localizedServiceHint(loc, level, online),
 		ShowEditor:      showEditor,
 		EditMode:        modeKey(edit),
 		RunningCount:    runningCount,
 		EnabledCount:    enabledCount,
 		ConfiguredCount: len(cfg.Items),
+		Lang:            loc.Lang(),
+		L:               loc,
+		Summary:         loc.Format("status_summary", runningCount, enabledCount, len(cfg.Items)),
+		ServiceMode:     localizedServiceLevel(loc, level),
+		CurrentURL:      r.URL.RequestURI(),
 	}
 
 	if err := managerPageTmpl.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleLanguage(w http.ResponseWriter, r *http.Request) {
+	lang := normalizeLanguage(r.URL.Query().Get("lang"))
+	if lang == "" {
+		lang = "en"
+	}
+	setLanguageCookie(w, lang)
+	next := strings.TrimSpace(r.URL.Query().Get("next"))
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		next = "/"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -220,36 +245,36 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
 	var err error
-	okMsg := "saved"
+	okMsg := "item_saved"
 
 	switch action {
 	case "start-daemon":
 		err = daemonctl.EnsureRunning(s.ControlAddr, s.ExePath, s.WorkDir)
-		okMsg = "daemon started"
+		okMsg = "daemon_started"
 	case "stop-daemon":
 		err = daemonctl.Stop(s.ControlAddr)
-		okMsg = "daemon stopped"
+		okMsg = "daemon_stopped"
 	case "reload":
 		err = reloadIfRunning(s.ControlAddr)
-		okMsg = "config reloaded"
+		okMsg = "config_reloaded"
 	case "toggle-item":
 		err = s.toggleItem(strings.TrimSpace(r.FormValue("id")))
-		okMsg = "item toggled"
+		okMsg = "item_toggled"
 	case "restart-item":
 		err = s.restartItem(strings.TrimSpace(r.FormValue("id")))
-		okMsg = "process restarted"
+		okMsg = "process_restarted"
 	case "delete-item":
 		err = s.deleteItem(strings.TrimSpace(r.FormValue("id")))
-		okMsg = "item deleted"
+		okMsg = "item_deleted"
 	case "save-item":
 		err = s.saveItem(r)
-		okMsg = "item saved"
+		okMsg = "item_saved"
 	case "quick-add":
 		err = s.quickAdd(r)
-		okMsg = "item added"
+		okMsg = "item_added"
 	case "save-path":
 		err = s.savePath(strings.TrimSpace(r.FormValue("path_env")))
-		okMsg = "PATH updated"
+		okMsg = "path_updated"
 	default:
 		err = fmt.Errorf("unknown action: %s", action)
 	}
@@ -505,17 +530,17 @@ func queryStatus(controlAddr string) ([]guardian.Status, bool, string, string, s
 	return resp.Status, true, "", resp.ServiceLevel, resp.ServiceHint
 }
 
-func modeLabel(it config.Item) string {
+func modeLabel(it config.Item, loc localizer) string {
 	if it.OnlyOpenOnce {
-		return "Start Once"
+		return loc.T("mode_once")
 	}
 	if strings.TrimSpace(it.CronExpression) != "" {
 		if it.StopBeforeCronExec {
-			return "Cron Restart"
+			return loc.T("mode_cron_restart")
 		}
-		return "Cron Run"
+		return loc.T("mode_cron_run")
 	}
-	return "Always Guard"
+	return loc.T("mode_guard")
 }
 
 func modeKey(it config.Item) string {
@@ -531,26 +556,53 @@ func modeKey(it config.Item) string {
 	return "guard"
 }
 
-func itemState(it config.Item, st guardian.Status, hasStatus, online bool) (string, string) {
+func itemState(it config.Item, st guardian.Status, hasStatus, online bool, loc localizer) (string, string) {
 	if !it.Started {
-		return "Disabled", "disabled"
+		return loc.T("state_disabled"), "disabled"
 	}
 	if !online {
-		return "Guardian offline", "offline"
+		return loc.T("state_offline"), "offline"
 	}
 	if hasStatus && st.Running {
-		return fmt.Sprintf("Running - PID %d", st.PID), "running"
+		return loc.Format("state_running", st.PID), "running"
 	}
 	if hasStatus && st.LastError != "" {
-		return "Error: " + st.LastError, "error"
+		return loc.Format("state_error", st.LastError), "error"
 	}
 	if hasStatus && it.OnlyOpenOnce && !st.LastExit.IsZero() {
-		return "Completed", "disabled"
+		return loc.T("state_completed"), "disabled"
 	}
 	if hasStatus && strings.TrimSpace(it.CronExpression) != "" && !it.StopBeforeCronExec {
-		return "Waiting for schedule", "waiting"
+		return loc.T("state_wait_schedule"), "waiting"
 	}
-	return "Waiting to start", "waiting"
+	return loc.T("state_wait_start"), "waiting"
+}
+
+func localizedServiceLevel(loc localizer, level string) string {
+	switch level {
+	case "system", "system-manual":
+		return loc.T("service_system")
+	case "user":
+		return loc.T("service_user")
+	case "manual":
+		return loc.T("service_manual")
+	default:
+		return loc.T("service_unknown")
+	}
+}
+
+func localizedServiceHint(loc localizer, level string, online bool) string {
+	if !online {
+		return loc.T("hint_offline")
+	}
+	switch level {
+	case "system", "system-manual":
+		return loc.T("hint_system")
+	case "user":
+		return loc.T("hint_user")
+	default:
+		return loc.T("hint_manual")
+	}
 }
 
 func slug(s string) string {
@@ -580,7 +632,7 @@ func urlEscape(s string) string {
 }
 
 var managerPageTmpl = template.Must(template.New("manager").Parse(`<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -605,6 +657,7 @@ button.danger{background:#f7e7e4;color:var(--red)}a{color:var(--green);text-deco
 .brand{display:flex;align-items:center;gap:13px}.mark{width:42px;height:42px;border-radius:13px;background:var(--ink);color:white;display:grid;place-items:center;font-weight:800;letter-spacing:-1px}
 .brand h1{font-size:20px;margin:0;letter-spacing:-.4px}.brand p{margin:2px 0 0;color:var(--muted);font-size:12px}
 .daemon{display:flex;align-items:center;gap:11px}.daemon-copy{text-align:right}.daemon-copy strong{display:block;font-size:13px}.daemon-copy small{color:var(--muted)}
+.lang-switch{display:flex;padding:3px;background:#edf1ee;border-radius:9px;margin-left:8px}.lang-switch a{font-size:11px;font-weight:750;color:var(--muted);padding:5px 8px;border-radius:7px}.lang-switch a.active{background:white;color:var(--ink);box-shadow:0 2px 8px rgba(30,49,40,.1)}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#9aa39f;box-shadow:0 0 0 4px #edf0ee}.dot.online,.dot.running{background:#18a36e;box-shadow:0 0 0 4px #dff3e9}.dot.error{background:var(--red);box-shadow:0 0 0 4px #f7e4e1}.dot.waiting{background:#d9891c;box-shadow:0 0 0 4px #ffefd8}
 .toolbar{display:flex;align-items:center;gap:8px;margin:18px 2px}.toolbar .spacer{flex:1}.summary{color:var(--muted);font-size:13px;margin-left:7px}
 .flash{padding:10px 13px;border-radius:11px;margin:0 2px 14px;font-size:13px}.flash.ok{background:var(--green-soft);color:#0d6243}.flash.error{background:#f9e4e1;color:#8b2e27}
@@ -645,36 +698,40 @@ function syncMode(){
   const mode=document.getElementById('mode');const cron=document.getElementById('cron-field');
   if(mode&&cron)cron.style.display=mode.value.startsWith('cron')?'grid':'none';
 }
+function confirmDelete(form){
+  const message=document.body.dataset.deletePrompt.replace('%s',form.dataset.name);
+  return confirm(message);
+}
 document.addEventListener('DOMContentLoaded',syncMode);
 </script>
 </head>
-<body>
+<body data-delete-prompt="{{.L.T "delete_confirm"}}">
 <main class="shell">
   <header class="topbar">
-    <div class="brand"><div class="mark">PG</div><div><h1>ProcessGod</h1><p>Native process guardian for macOS</p></div></div>
-    <div class="daemon"><span class="dot {{if .Online}}online{{end}}"></span><div class="daemon-copy"><strong>{{if .Online}}Guardian running{{else}}Guardian stopped{{end}}</strong><small>{{.ServiceLevel}} mode</small></div></div>
+    <div class="brand"><div class="mark">PG</div><div><h1>ProcessGod</h1><p>{{.L.T "native_subtitle"}}</p></div></div>
+    <div class="daemon"><span class="dot {{if .Online}}online{{end}}"></span><div class="daemon-copy"><strong>{{if .Online}}{{.L.T "guardian_running"}}{{else}}{{.L.T "guardian_stopped"}}{{end}}</strong><small>{{.ServiceMode}}</small></div><div class="lang-switch"><a class="{{if eq .Lang "en"}}active{{end}}" href="/language?lang=en&next={{urlquery .CurrentURL}}">EN</a><a class="{{if eq .Lang "zh-CN"}}active{{end}}" href="/language?lang=zh-CN&next={{urlquery .CurrentURL}}">简中</a></div></div>
   </header>
 
   <nav class="toolbar">
-    <a class="button primary" href="/?new=1">+ Add Process</a>
+    <a class="button primary" href="/?new=1">+ {{.L.T "add_process"}}</a>
     {{if .Online}}
-    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="stop-daemon"><button class="ghost">Stop Guardian</button></form>
+    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="stop-daemon"><button class="ghost">{{.L.T "stop_guardian"}}</button></form>
     {{else}}
-    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="start-daemon"><button>Start Guardian</button></form>
+    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="start-daemon"><button>{{.L.T "start_guardian"}}</button></form>
     {{end}}
-    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="reload"><button class="ghost" {{if .ReloadDisabled}}disabled{{end}}>Reload</button></form>
-    <span class="summary">{{.RunningCount}} running / {{.EnabledCount}} enabled / {{.ConfiguredCount}} configured</span>
+    <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="reload"><button class="ghost" {{if .ReloadDisabled}}disabled{{end}}>{{.L.T "reload"}}</button></form>
+    <span class="summary">{{.Summary}}</span>
     <span class="spacer"></span>
     <span class="summary">{{.ServiceHint}}</span>
   </nav>
 
   {{if .FlashErr}}<div class="flash error">{{.FlashErr}}</div>{{end}}
-  {{if .StatusErr}}<div class="flash error">Guardian status: {{.StatusErr}}</div>{{end}}
+  {{if .StatusErr}}<div class="flash error">{{.L.T "guardian_status"}}: {{.StatusErr}}</div>{{end}}
   {{if .FlashOK}}<div class="flash ok">{{.FlashOK}}</div>{{end}}
 
   <div class="layout">
     <section class="panel">
-      <div class="panel-head"><div><h2>Processes</h2><small>Click Edit for full configuration</small></div><small>{{.ConfiguredCount}} total</small></div>
+      <div class="panel-head"><div><h2>{{.L.T "processes"}}</h2><small>{{.L.T "edit_hint"}}</small></div><small>{{.L.Format "total" .ConfiguredCount}}</small></div>
       <div class="tasks">
         {{range .Rows}}
         <article class="task">
@@ -683,48 +740,48 @@ document.addEventListener('DOMContentLoaded',syncMode);
           <div class="state {{.StateClass}}" title="{{.StateLabel}}">{{.StateLabel}}</div>
           <div class="actions">
             <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="toggle-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="ghost">{{.ToggleLabel}}</button></form>
-            <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="restart-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="ghost" {{if or (not .Item.Started) (not $.Online)}}disabled{{end}}>Restart</button></form>
-            {{if .Has}}<a class="button ghost" href="/logs?id={{.Item.ID}}&lines=120" target="_blank">Logs</a>{{end}}
-            <a class="button ghost" href="/?edit={{.Item.ID}}">Edit</a>
-            <form class="inline" method="post" action="/action" onsubmit="return confirm('Delete {{.Item.ProcessName}} and stop it?')"><input type="hidden" name="action" value="delete-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="danger">Delete</button></form>
+            <form class="inline" method="post" action="/action"><input type="hidden" name="action" value="restart-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="ghost" {{if or (not .Item.Started) (not $.Online)}}disabled{{end}}>{{$.L.T "restart"}}</button></form>
+            {{if .Has}}<a class="button ghost" href="/logs?id={{.Item.ID}}&lines=120" target="_blank">{{$.L.T "logs"}}</a>{{end}}
+            <a class="button ghost" href="/?edit={{.Item.ID}}">{{$.L.T "edit"}}</a>
+            <form class="inline" method="post" action="/action" onsubmit="return confirmDelete(this)" data-name="{{.Item.ProcessName}}"><input type="hidden" name="action" value="delete-item"><input type="hidden" name="id" value="{{.Item.ID}}"><button class="danger">{{$.L.T "delete"}}</button></form>
           </div>
         </article>
         {{else}}
-        <div class="empty"><strong>No processes configured</strong>Add the first command you want ProcessGod to keep alive.</div>
+        <div class="empty"><strong>{{.L.T "no_processes"}}</strong>{{.L.T "no_processes_body"}}</div>
         {{end}}
       </div>
 
       <details class="settings">
-        <summary>Command PATH and advanced settings</summary>
+        <summary>{{.L.T "path_settings"}}</summary>
         <form method="post" action="/action">
           <input type="hidden" name="action" value="save-path">
-          <div class="path-row"><input type="text" id="path_env" name="path_env" value="{{.PathEnv}}" readonly><button type="button" id="path_modify" class="ghost" onclick="enablePathEdit()">Modify</button><button type="submit" id="path_save" hidden>Save</button><button type="button" id="path_cancel" class="danger" hidden onclick="cancelPathEdit()">Cancel</button></div>
-          <div class="hint">Used to resolve command names such as node, java and python. Absolute paths work without this setting.</div>
+          <div class="path-row"><input type="text" id="path_env" name="path_env" value="{{.PathEnv}}" readonly><button type="button" id="path_modify" class="ghost" onclick="enablePathEdit()">{{.L.T "modify"}}</button><button type="submit" id="path_save" hidden>{{.L.T "save"}}</button><button type="button" id="path_cancel" class="danger" hidden onclick="cancelPathEdit()">{{.L.T "cancel"}}</button></div>
+          <div class="hint">{{.L.T "path_hint"}}</div>
         </form>
       </details>
     </section>
 
     <aside class="panel inspector">
       {{if .ShowEditor}}
-      <div class="inspector-head"><h2>{{if .EditFound}}Edit Process{{else}}New Process{{end}}</h2><p>{{if .EditFound}}{{.Edit.ID}}{{else}}Configure one command and its restart behavior{{end}}</p></div>
+      <div class="inspector-head"><h2>{{if .EditFound}}{{.L.T "edit_process"}}{{else}}{{.L.T "new_process"}}{{end}}</h2><p>{{if .EditFound}}{{.Edit.ID}}{{else}}{{.L.T "configure_process"}}{{end}}</p></div>
       <form method="post" action="/action" class="form-body">
         <input type="hidden" name="action" value="save-item"><input type="hidden" name="original_id" value="{{.Edit.ID}}">
-        <div class="field"><label for="process_name">Display Name</label><input id="process_name" type="text" name="process_name" value="{{.Edit.ProcessName}}" placeholder="API Server" required></div>
-        <div class="field"><label for="exec_path">Command</label><input id="exec_path" type="text" name="exec_path" value="{{.Edit.ExecPath}}" placeholder="node or /usr/local/bin/my-server" required></div>
-        <div class="field"><label for="startup_params">Arguments</label><input id="startup_params" type="text" name="startup_params" value="{{.Edit.StartupParams}}" placeholder="server.js --port 8080"></div>
-        <div class="field"><label for="mode">Behavior</label><select id="mode" name="mode" onchange="syncMode()"><option value="guard" {{if eq .EditMode "guard"}}selected{{end}}>Always Guard - restart after exit</option><option value="once" {{if eq .EditMode "once"}}selected{{end}}>Start Once - do not restart</option><option value="cron-run" {{if eq .EditMode "cron-run"}}selected{{end}}>Cron Run - start only on schedule</option><option value="cron-restart" {{if eq .EditMode "cron-restart"}}selected{{end}}>Cron Restart - guard and restart on schedule</option></select></div>
-        <div class="field" id="cron-field"><label for="cron_expression">Cron Schedule</label><input id="cron_expression" type="text" name="cron_expression" value="{{.Edit.CronExpression}}" placeholder="0 1 * * *"></div>
-        <label class="check"><input type="checkbox" name="started" {{if .Edit.Started}}checked{{end}}> Enabled immediately</label>
-        <details class="advanced"><summary>Advanced options</summary><div class="inside">
-          <div class="field"><label for="id">Stable ID</label><input id="id" type="text" name="id" value="{{.Edit.ID}}" placeholder="generated from name"></div>
-          <div class="field"><label for="working_dir">Working Directory</label><input id="working_dir" type="text" name="working_dir" value="{{.Edit.WorkingDir}}" placeholder="optional"></div>
-          <label class="check"><input type="checkbox" name="no_window" {{if .Edit.NoWindow}}checked{{end}}> No window</label>
-          <label class="check"><input type="checkbox" name="minimize" {{if .Edit.Minimize}}checked{{end}}> Start minimized</label>
+        <div class="field"><label for="process_name">{{.L.T "display_name"}}</label><input id="process_name" type="text" name="process_name" value="{{.Edit.ProcessName}}" placeholder="{{.L.T "display_name_example"}}" required></div>
+        <div class="field"><label for="exec_path">{{.L.T "command"}}</label><input id="exec_path" type="text" name="exec_path" value="{{.Edit.ExecPath}}" placeholder="{{.L.T "command_example"}}" required></div>
+        <div class="field"><label for="startup_params">{{.L.T "arguments"}}</label><input id="startup_params" type="text" name="startup_params" value="{{.Edit.StartupParams}}" placeholder="{{.L.T "arguments_example"}}"></div>
+        <div class="field"><label for="mode">{{.L.T "behavior"}}</label><select id="mode" name="mode" onchange="syncMode()"><option value="guard" {{if eq .EditMode "guard"}}selected{{end}}>{{.L.T "mode_guard_full"}}</option><option value="once" {{if eq .EditMode "once"}}selected{{end}}>{{.L.T "mode_once_full"}}</option><option value="cron-run" {{if eq .EditMode "cron-run"}}selected{{end}}>{{.L.T "mode_cron_run_full"}}</option><option value="cron-restart" {{if eq .EditMode "cron-restart"}}selected{{end}}>{{.L.T "mode_cron_restart_full"}}</option></select></div>
+        <div class="field" id="cron-field"><label for="cron_expression">{{.L.T "cron_schedule"}}</label><input id="cron_expression" type="text" name="cron_expression" value="{{.Edit.CronExpression}}" placeholder="0 1 * * *"></div>
+        <label class="check"><input type="checkbox" name="started" {{if .Edit.Started}}checked{{end}}> {{.L.T "enabled_immediately"}}</label>
+        <details class="advanced"><summary>{{.L.T "advanced_options"}}</summary><div class="inside">
+          <div class="field"><label for="id">{{.L.T "stable_id"}}</label><input id="id" type="text" name="id" value="{{.Edit.ID}}" placeholder="{{.L.T "generated_from_name"}}"></div>
+          <div class="field"><label for="working_dir">{{.L.T "working_directory"}}</label><input id="working_dir" type="text" name="working_dir" value="{{.Edit.WorkingDir}}" placeholder="{{.L.T "optional"}}"></div>
+          <label class="check"><input type="checkbox" name="no_window" {{if .Edit.NoWindow}}checked{{end}}> {{.L.T "no_window"}}</label>
+          <label class="check"><input type="checkbox" name="minimize" {{if .Edit.Minimize}}checked{{end}}> {{.L.T "start_minimized"}}</label>
         </div></details>
-        <div class="form-actions"><button type="submit">{{if .EditFound}}Save Changes{{else}}Add Process{{end}}</button><a class="button ghost" href="/">Cancel</a></div>
+        <div class="form-actions"><button type="submit">{{if .EditFound}}{{.L.T "save_changes"}}{{else}}{{.L.T "add_process"}}{{end}}</button><a class="button ghost" href="/">{{.L.T "cancel"}}</a></div>
       </form>
       {{else}}
-      <div class="inspector-empty"><strong>Select a process to edit</strong>Use the row actions for daily control, or add a new process.<div style="margin-top:18px"><a class="button primary" href="/?new=1">+ Add Process</a></div></div>
+      <div class="inspector-empty"><strong>{{.L.T "select_process"}}</strong>{{.L.T "select_process_body"}}<div style="margin-top:18px"><a class="button primary" href="/?new=1">+ {{.L.T "add_process"}}</a></div></div>
       {{end}}
     </aside>
   </div>
