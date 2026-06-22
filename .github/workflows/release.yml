@@ -66,10 +66,30 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
         run: |
           TAG="v${VERSION}-${CHANNEL}"
-          gh release create "$TAG" \
-            "dist/processgod-mac-${VERSION}-${CHANNEL}.dmg" \
-            "dist/processgod-mac-${VERSION}-${CHANNEL}.dmg.sha256" \
-            --target "$GITHUB_SHA" \
-            --title "ProcessGodMac ${TAG}" \
-            --notes "Native Swift UI and Go guardian preview release." \
-            --prerelease
+          DMG="dist/processgod-mac-${VERSION}-${CHANNEL}.dmg"
+          SHA_FILE="${DMG}.sha256"
+          cat > "$RUNNER_TEMP/release-notes.md" <<NOTES
+          Native Swift UI and Go guardian preview release.
+
+          This DMG is Developer ID signed, notarized, stapled, and validated by GitHub Actions.
+
+          SHA-256:
+          \`\`\`
+          $(cat "$SHA_FILE")
+          \`\`\`
+          NOTES
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "ProcessGodMac ${TAG}" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --prerelease
+            gh release upload "$TAG" "$DMG" "$SHA_FILE" --clobber
+          else
+            gh release create "$TAG" "$DMG" "$SHA_FILE" \
+              --target "$GITHUB_SHA" \
+              --title "ProcessGodMac ${TAG}" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --prerelease
+          fi
