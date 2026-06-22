@@ -65,7 +65,13 @@ final class AppModel {
             serviceRequiresApproval = services.systemService.status == .requiresApproval
             client = DaemonClient(socketPath: serviceSelection == .system ? services.systemSocket : services.userSocket)
             try await waitForDaemon(using: client)
-            try await refresh()
+            do {
+                try await refresh()
+            } catch {
+                guard Self.shouldBootstrapApprovedSystem(selection: serviceSelection, error: error) else { throw error }
+                try await bootstrapApprovedSystemDaemon(using: client)
+                try await refresh()
+            }
             if serviceSelection == .user && services.hasPendingStartupMigration {
                 guard runtime.healthy else {
                     throw RPCErrorPayload(code: "daemon_degraded", message: runtime.error ?? "Daemon configuration needs repair")
@@ -88,6 +94,11 @@ final class AppModel {
         config = try await configValue
         runtime = try await runtimeValue
         connectionError = nil
+    }
+
+    static func shouldBootstrapApprovedSystem(selection: ServiceSelection, error: Error) -> Bool {
+        guard selection == .system, let rpcError = error as? RPCErrorPayload else { return false }
+        return rpcError.code == "not_bootstrapped"
     }
 
     @discardableResult
@@ -184,6 +195,34 @@ final class AppModel {
             else { await services.rollbackUserSwitch() }
             try? await refresh()
         }
+    }
+
+    private func bootstrapApprovedSystemDaemon(using systemClient: DaemonClient) async throws {
+        let rawConfig = try await configForApprovedSystemBootstrap()
+        do {
+            let _: ConfigSnapshot = try await systemClient.call("system.bootstrap", params: BootstrapParams(config: rawConfig))
+        } catch let error as RPCErrorPayload where error.code == "already_bootstrapped" {
+            // Another app instance may have completed bootstrap after our first refresh.
+        }
+        try await waitForDaemon(using: systemClient, requireHealthy: true)
+        try await services.finishSystemSwitch()
+        serviceSelection = .system
+        serviceRequiresApproval = false
+        client = systemClient
+    }
+
+    private func configForApprovedSystemBootstrap() async throws -> JSONValue {
+        let userClient = DaemonClient(socketPath: services.userSocket)
+        if let userConfig: JSONValue = try? await userClient.call("config.export") {
+            return userConfig
+        }
+        if let legacyConfig = try services.legacySystemConfig() {
+            return legacyConfig
+        }
+        throw RPCErrorPayload(
+            code: "not_bootstrapped",
+            message: "System daemon is approved but no user or legacy configuration is available for bootstrap"
+        )
     }
 
     private func waitForDaemon(using daemonClient: DaemonClient, requireHealthy: Bool = false) async throws {

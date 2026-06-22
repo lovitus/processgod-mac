@@ -52,11 +52,7 @@ actor DaemonClient {
     let socketPath: String
     private let queue = DispatchQueue(label: "com.lovitus.processgod.ipc")
     private let encoder = JSONEncoder()
-    private let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
+    private let decoder = WireJSON.decoder()
 
     init(socketPath: String) {
         self.socketPath = socketPath
@@ -206,9 +202,7 @@ actor DaemonClient {
                     continue
                 }
                 do {
-                    let decoder = JSONDecoder()
-                    decoder.dateDecodingStrategy = .iso8601
-                    continuation.yield(try decoder.decode(EventEnvelope.self, from: line).event)
+                    continuation.yield(try WireJSON.decoder().decode(EventEnvelope.self, from: line).event)
                 } catch {
                     continuation.finish(throwing: error)
                     connection.cancel()

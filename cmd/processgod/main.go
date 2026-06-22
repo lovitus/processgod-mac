@@ -273,7 +273,7 @@ func runServiceCommand(args []string) error {
 		return err
 	}
 	executable, _ = filepath.EvalSymlinks(executable)
-	root, err := runtimepaths.UserRoot()
+	root, err := serviceWorkingRoot(system)
 	if err != nil {
 		return err
 	}
@@ -293,6 +293,13 @@ func runServiceCommand(args []string) error {
 	default:
 		return fmt.Errorf("unknown service command %q", args[0])
 	}
+}
+
+func serviceWorkingRoot(system bool) (string, error) {
+	if system {
+		return runtimepaths.SystemRoot, nil
+	}
+	return runtimepaths.UserRoot()
 }
 
 func printUsage() {

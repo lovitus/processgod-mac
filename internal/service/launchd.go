@@ -34,7 +34,11 @@ func Install(binaryPath, workingDir string, system bool) error {
 		return fmt.Errorf("resolve working dir: %w", err)
 	}
 
-	content := renderPlist(binaryPath, workingDir)
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return fmt.Errorf("create working directory: %w", err)
+	}
+
+	content := renderPlist(binaryPath, workingDir, system)
 	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
@@ -148,9 +152,13 @@ func launchDomain(system bool) string {
 	return fmt.Sprintf("gui/%d", os.Getuid())
 }
 
-func renderPlist(binaryPath, workingDir string) string {
+func renderPlist(binaryPath, workingDir string, system bool) string {
 	escapedBinary := xmlEscape(binaryPath)
 	escapedWorkDir := xmlEscape(workingDir)
+	scope := "user"
+	if system {
+		scope = "system"
+	}
 
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -162,6 +170,8 @@ func renderPlist(binaryPath, workingDir string) string {
   <array>
     <string>` + escapedBinary + `</string>
     <string>daemon</string>
+    <string>--scope</string>
+    <string>` + scope + `</string>
   </array>
   <key>WorkingDirectory</key>
   <string>` + escapedWorkDir + `</string>

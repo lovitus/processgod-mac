@@ -6,10 +6,12 @@ import (
 )
 
 func TestRenderPlistIncludesDaemonArgs(t *testing.T) {
-	plist := renderPlist("/tmp/processgod-mac", "/tmp")
+	plist := renderPlist("/tmp/processgod-mac", "/tmp", false)
 	checks := []string{
 		"<string>/tmp/processgod-mac</string>",
 		"<string>daemon</string>",
+		"<string>--scope</string>",
+		"<string>user</string>",
 		"<string>/tmp</string>",
 		"<string>com.lovitus.processgod.mac</string>",
 		"<key>PROCESSGOD_HOME</key>",
@@ -17,6 +19,21 @@ func TestRenderPlistIncludesDaemonArgs(t *testing.T) {
 	for _, c := range checks {
 		if !strings.Contains(plist, c) {
 			t.Fatalf("plist missing %q", c)
+		}
+	}
+}
+
+func TestRenderSystemPlistUsesSystemScope(t *testing.T) {
+	plist := renderPlist("/tmp/processgod-mac", "/Library/Application Support/ProcessGodMac", true)
+	checks := []string{
+		"<string>daemon</string>",
+		"<string>--scope</string>",
+		"<string>system</string>",
+		"<string>/Library/Application Support/ProcessGodMac</string>",
+	}
+	for _, c := range checks {
+		if !strings.Contains(plist, c) {
+			t.Fatalf("system plist missing %q", c)
 		}
 	}
 }

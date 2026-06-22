@@ -8,6 +8,20 @@ private struct HelloFixture: Codable, Sendable {
     let capabilities: [String]
 }
 
+private struct TestProcessParams: Codable, Sendable {
+    let expectedRevision: UInt64
+    let process: ProcessDefinition
+}
+
+private struct TestLogParams: Codable, Sendable {
+    let id: String
+    let lines: Int
+}
+
+private struct TestIDParams: Codable, Sendable {
+    let id: String
+}
+
 @MainActor
 final class ModelTests: XCTestCase {
     func testConfigFixtureMatchesGoContract() throws {
@@ -24,10 +38,19 @@ final class ModelTests: XCTestCase {
 
     func testStructuredLogFixture() throws {
         let json = #"{"processID":"echo","totalSeen":1,"lineMaxBytes":4096,"errorWarning":{"capacity":100,"kept":0,"entries":[]},"standardOther":{"capacity":20,"kept":1,"entries":[{"sequence":1,"timestamp":"2026-06-22T00:00:00Z","source":"stdout","category":"standardOther","text":"hello"}]}}"#
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        let snapshot = try decoder.decode(LogSnapshot.self, from: Data(json.utf8))
+        let snapshot = try WireJSON.decoder().decode(LogSnapshot.self, from: Data(json.utf8))
         XCTAssertEqual(snapshot.standardOther.entries.first?.text, "hello")
         XCTAssertEqual(snapshot.errorWarning.capacity, 100)
+    }
+
+    func testWireJSONDecodesGoRFC3339NanoTimestamps() throws {
+        let logs = #"{"processID":"echo","totalSeen":1,"lineMaxBytes":4096,"errorWarning":{"capacity":100,"kept":0,"entries":[]},"standardOther":{"capacity":20,"kept":1,"entries":[{"sequence":1,"timestamp":"2026-06-22T17:27:30.372997123Z","source":"stdout","category":"standardOther","text":"hello"}]}}"#
+        let snapshot = try WireJSON.decoder().decode(LogSnapshot.self, from: Data(logs.utf8))
+        XCTAssertEqual(snapshot.standardOther.entries.count, 1)
+
+        let runtime = #"{"mode":"user","paused":false,"healthy":true,"processes":[{"id":"echo","name":"Echo","state":"running","pid":123,"lastStart":"2026-06-22T17:27:30.372997Z"}]}"#
+        let status = try WireJSON.decoder().decode(RuntimeSnapshot.self, from: Data(runtime.utf8))
+        XCTAssertNotNil(status.processes.first?.lastStart)
     }
 
     func testProcessDefinitionAcceptsOmittedOptionalFields() throws {
@@ -82,6 +105,49 @@ final class ModelTests: XCTestCase {
         let config: ConfigSnapshot = try await client.call("config.get")
         XCTAssertEqual(config.schemaVersion, 2)
 
+        let processDefinition = ProcessDefinition(
+            id: "swift-real-timestamp",
+            name: "Swift Real Timestamp",
+            command: "/bin/sh",
+            arguments: "-c 'echo swift-real-timestamp'",
+            mode: .once,
+            enabled: true
+        )
+        let _: ConfigSnapshot = try await client.call(
+            "process.create",
+            params: TestProcessParams(expectedRevision: config.revision, process: processDefinition)
+        )
+        let restarted: RuntimeSnapshot = try await client.call(
+            "process.restart",
+            params: TestIDParams(id: processDefinition.id)
+        )
+        XCTAssertNotNil(restarted.processes.first(where: { $0.id == processDefinition.id })?.lastStart)
+
+        var runtime: RuntimeSnapshot?
+        for _ in 0..<50 {
+            let value: RuntimeSnapshot = try await client.call("status.list")
+            if value.processes.first(where: { $0.id == processDefinition.id })?.lastStart != nil {
+                runtime = value
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(runtime?.processes.first(where: { $0.id == processDefinition.id })?.lastStart)
+
+        var logSnapshot: LogSnapshot?
+        for _ in 0..<50 {
+            let value: LogSnapshot = try await client.call(
+                "logs.snapshot",
+                params: TestLogParams(id: processDefinition.id, lines: 0)
+            )
+            if value.standardOther.entries.contains(where: { $0.text.contains("swift-real-timestamp") }) {
+                logSnapshot = value
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(logSnapshot?.standardOther.entries.first?.source, "stdout")
+
         do {
             let _: ConfigSnapshot = try await client.call("missing.method")
             XCTFail("Unknown RPC method unexpectedly succeeded")
@@ -119,6 +185,14 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(PopoverSummary(config: config, runtime: runtime), PopoverSummary(running: 1, enabled: 1))
         XCTAssertEqual(ServiceController.activeSelection(systemEnabled: false), .user)
         XCTAssertEqual(ServiceController.activeSelection(systemEnabled: true), .system)
+        XCTAssertTrue(AppModel.shouldBootstrapApprovedSystem(
+            selection: .system,
+            error: RPCErrorPayload(code: "not_bootstrapped", message: "system daemon has no owner")
+        ))
+        XCTAssertFalse(AppModel.shouldBootstrapApprovedSystem(
+            selection: .user,
+            error: RPCErrorPayload(code: "not_bootstrapped", message: "system daemon has no owner")
+        ))
     }
 
     func testErrorCodeLocalizationInBothLanguages() {
