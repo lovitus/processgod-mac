@@ -124,6 +124,8 @@ ditto "${APP_PATH}" "${STAGE_DIR}/${APP_NAME}.app"
 ln -s /Applications "${STAGE_DIR}/Applications"
 cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
 hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_PATH}"
+codesign --force --timestamp --sign "${SIGNING_IDENTITY}" "${DMG_PATH}"
+codesign --verify --strict --verbose=2 "${DMG_PATH}"
 
 if [[ "${SKIP_NOTARIZATION:-0}" != "1" ]]; then
   echo "==> Notarize and staple DMG"
