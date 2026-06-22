@@ -1,29 +1,27 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/getlantern/systray"
+	"github.com/lovitus/processgod-mac/internal/api"
 	"github.com/lovitus/processgod-mac/internal/app"
 	"github.com/lovitus/processgod-mac/internal/config"
-	"github.com/lovitus/processgod-mac/internal/dashboard"
-	"github.com/lovitus/processgod-mac/internal/guardian"
 	"github.com/lovitus/processgod-mac/internal/ipc"
+	"github.com/lovitus/processgod-mac/internal/runtimepaths"
 	"github.com/lovitus/processgod-mac/internal/service"
 )
 
-var version = "0.1.0-dev"
+var version = "0.4.0-dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -32,54 +30,32 @@ func main() {
 }
 
 func run(args []string) error {
-	configPath, err := config.EnsureDefaultConfig()
-	if err != nil {
-		return err
-	}
-	controlAddr := config.ControlAddress()
-
 	if len(args) == 0 {
-		if launchedFromAppBundle() {
-			return runAppMode(configPath, controlAddr)
-		}
 		printUsage()
 		return nil
 	}
-
 	switch args[0] {
 	case "version", "--version", "-v":
 		fmt.Printf("processgod-mac %s\n", version)
 		return nil
 	case "daemon":
-		return runDaemon(configPath, controlAddr)
-	case "reload":
-		resp, err := ipc.Send(controlAddr, ipc.Request{Action: "reload"})
-		if err != nil {
-			return err
-		}
-		if !resp.OK {
-			return errors.New(resp.Error)
-		}
-		fmt.Println(resp.Message)
-		return nil
+		return runDaemon(args[1:])
 	case "status":
-		resp, err := ipc.Send(controlAddr, ipc.Request{Action: "status"})
-		if err != nil {
-			return err
-		}
-		if !resp.OK {
-			return errors.New(resp.Error)
-		}
-		printStatus(resp.Status)
-		return nil
+		return runStatus(args[1:])
 	case "logs":
-		return runLogs(controlAddr, args[1:])
-	case "service":
+		return runLogs(args[1:])
+	case "restart":
+		return runIDMethod("process.restart", args[1:])
+	case "pause":
+		return runSimpleMethod("guardian.pause", args[1:])
+	case "resume":
+		return runSimpleMethod("guardian.resume", args[1:])
+	case "reload":
+		return runSimpleMethod("config.reload", args[1:])
+	case "service", "legacy-service":
 		return runServiceCommand(args[1:])
 	case "config":
-		return runConfigCommand(configPath, args[1:])
-	case "dashboard":
-		return runDashboard(configPath, controlAddr, args[1:])
+		return runConfigCommand(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -88,198 +64,172 @@ func run(args []string) error {
 	}
 }
 
-func runAppMode(configPath, controlAddr string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
+func runDaemon(args []string) error {
+	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	scopeValue := flags.String("scope", "", "user or system")
+	if err := flags.Parse(args); err != nil {
+		return err
 	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		exe = strings.TrimSpace(exe)
+	system := os.Geteuid() == 0
+	if *scopeValue != "" {
+		switch *scopeValue {
+		case "user":
+			system = false
+		case "system":
+			system = true
+		default:
+			return fmt.Errorf("invalid scope %q", *scopeValue)
+		}
 	}
-
-	workDir, err := config.EnsureAppSupportDir()
+	configPath, err := runtimepaths.ConfigPath(system)
 	if err != nil {
 		return err
 	}
-	dashAddr := dashboardAddr()
-
-	t := &trayApp{
-		configPath:  configPath,
-		controlAddr: controlAddr,
-		exePath:     exe,
-		workDir:     workDir,
-		dashAddr:    dashAddr,
-		dashboard:   "http://" + dashAddr,
+	if !system {
+		if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
+			if err := config.Save(configPath, config.Config{}); err != nil {
+				return err
+			}
+		}
 	}
-	go func() {
-		s := &dashboard.Server{
-			Addr:        dashAddr,
-			ConfigPath:  configPath,
-			ControlAddr: controlAddr,
-			ExePath:     exe,
-			WorkDir:     workDir,
-		}
-		if err := s.Run(false); err != nil {
-			log.Printf("dashboard server stopped: %v", err)
-		}
-	}()
-	systray.Run(t.onReady, t.onExit)
-	return nil
-}
-
-func launchedFromAppBundle() bool {
-	exe, err := os.Executable()
+	socketPath, err := runtimepaths.SocketPath(system)
 	if err != nil {
-		return false
+		return err
 	}
-	return strings.Contains(exe, ".app/Contents/MacOS/")
-}
-
-func notify(title, message string) {
-	script := fmt.Sprintf("display notification %s with title %s", appleScriptQuote(message), appleScriptQuote(title))
-	_ = exec.Command("osascript", "-e", script).Run()
-}
-
-func appleScriptQuote(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	return `"` + s + `"`
-}
-
-func runDaemon(configPath, controlAddr string) error {
-	d := app.NewDaemon(configPath, controlAddr)
+	scope := ipc.ScopeUser
+	if system {
+		scope = ipc.ScopeSystem
+	}
+	daemon := app.NewDaemon(configPath, socketPath, scope)
 	stop := make(chan struct{})
 	var once sync.Once
-	closeStop := func() {
-		once.Do(func() {
-			close(stop)
-		})
-	}
-	d.SetStopFunc(closeStop)
-
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	closeStop := func() { once.Do(func() { close(stop) }) }
+	daemon.SetStopFunc(closeStop)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
+		<-signals
 		closeStop()
 	}()
-
-	return d.Run(stop)
+	return daemon.Run(stop)
 }
 
-func runLogs(controlAddr string, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: processgod logs <id> [--lines N]")
-	}
-	id := args[0]
-	lines := 200
-
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--lines" {
-			if i+1 >= len(args) {
-				return fmt.Errorf("--lines requires a number")
-			}
-			n, err := strconv.Atoi(args[i+1])
-			if err != nil || n <= 0 {
-				return fmt.Errorf("invalid --lines value %q", args[i+1])
-			}
-			lines = n
-			i++
-		}
-	}
-
-	resp, err := ipc.Send(controlAddr, ipc.Request{Action: "logs", ID: id, Lines: lines})
+func runStatus(args []string) error {
+	client, err := clientFromArgs("status", args)
 	if err != nil {
 		return err
 	}
-	if !resp.OK {
-		return errors.New(resp.Error)
+	var snapshot api.RuntimeSnapshot
+	if err := client.Call(context.Background(), "status.list", nil, &snapshot); err != nil {
+		return err
 	}
-	fmt.Println(resp.Logs)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tSTATE\tPID\tLAST START\tERROR")
+	for _, process := range snapshot.Processes {
+		lastStart := "-"
+		if process.LastStart != nil {
+			lastStart = process.LastStart.Local().Format("2006-01-02 15:04:05")
+		}
+		errText := process.Error
+		if errText == "" {
+			errText = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", process.ID, process.Name, process.State, process.PID, lastStart, errText)
+	}
+	return w.Flush()
+}
+
+func runLogs(args []string) error {
+	flags := flag.NewFlagSet("logs", flag.ContinueOnError)
+	system := flags.Bool("system", false, "connect to system daemon")
+	lines := flags.Int("lines", 0, "maximum lines per buffer")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("usage: processgod-mac logs [--system] [--lines N] <id>")
+	}
+	client, err := clientForScope(*system)
+	if err != nil {
+		return err
+	}
+	var snapshot api.LogSnapshot
+	if err := client.Call(context.Background(), "logs.snapshot", map[string]any{"id": flags.Arg(0), "lines": *lines}, &snapshot); err != nil {
+		return err
+	}
+	fmt.Printf("# memory-only: error_warning=%d/%d standard_other=%d/%d total_seen=%d line_max_bytes=%d\n", snapshot.ErrorWarning.Kept, snapshot.ErrorWarning.Capacity, snapshot.StandardOther.Kept, snapshot.StandardOther.Capacity, snapshot.TotalSeen, snapshot.LineMaxBytes)
+	fmt.Println("\n[error_warning]")
+	for _, entry := range snapshot.ErrorWarning.Entries {
+		fmt.Printf("E#%d %s\n", entry.Sequence, entry.Text)
+	}
+	fmt.Println("\n[standard_other]")
+	for _, entry := range snapshot.StandardOther.Entries {
+		fmt.Printf("S#%d %s\n", entry.Sequence, entry.Text)
+	}
 	return nil
 }
 
-func runServiceCommand(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: processgod service <install|start|stop|status|uninstall> [--system]")
+func runIDMethod(method string, args []string) error {
+	flags := flag.NewFlagSet(method, flag.ContinueOnError)
+	system := flags.Bool("system", false, "connect to system daemon")
+	if err := flags.Parse(args); err != nil {
+		return err
 	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("%s requires a process id", method)
+	}
+	client, err := clientForScope(*system)
+	if err != nil {
+		return err
+	}
+	return client.Call(context.Background(), method, map[string]string{"id": flags.Arg(0)}, nil)
+}
 
+func runSimpleMethod(method string, args []string) error {
+	client, err := clientFromArgs(method, args)
+	if err != nil {
+		return err
+	}
+	return client.Call(context.Background(), method, map[string]uint64{"expectedRevision": 0}, nil)
+}
+
+func clientFromArgs(name string, args []string) (*ipc.Client, error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	system := flags.Bool("system", false, "connect to system daemon")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	return clientForScope(*system)
+}
+
+func clientForScope(system bool) (*ipc.Client, error) {
+	path, err := runtimepaths.SocketPath(system)
+	if err != nil {
+		return nil, err
+	}
+	return &ipc.Client{SocketPath: path}, nil
+}
+
+func runConfigCommand(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: processgod-mac config <path|validate|sample> [--system]")
+	}
 	system := false
-	for _, a := range args[1:] {
-		if a == "--system" {
+	for _, arg := range args[1:] {
+		if arg == "--system" {
 			system = true
 		}
 	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		exe = strings.TrimSpace(exe)
-	}
-
-	workDir, err := config.EnsureAppSupportDir()
+	path, err := runtimepaths.ConfigPath(system)
 	if err != nil {
 		return err
 	}
-
 	switch args[0] {
-	case "install":
-		if err := service.Install(exe, workDir, system); err != nil {
-			return err
-		}
-		fmt.Println("service installed")
-		return nil
-	case "start":
-		if err := service.Start(system); err != nil {
-			return err
-		}
-		fmt.Println("service started")
-		return nil
-	case "stop":
-		if err := service.Stop(system); err != nil {
-			return err
-		}
-		fmt.Println("service stopped")
-		return nil
-	case "status":
-		out, err := service.Status(system)
-		if out != "" {
-			fmt.Println(out)
-		}
-		return err
-	case "uninstall":
-		if err := service.Uninstall(system); err != nil {
-			return err
-		}
-		fmt.Println("service uninstalled")
-		return nil
-	default:
-		return fmt.Errorf("unknown service subcommand %q", args[0])
-	}
-}
-
-func runConfigCommand(configPath string, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: processgod config <init|path|validate|sample>")
-	}
-
-	switch args[0] {
-	case "init":
-		_, err := config.EnsureDefaultConfig()
-		if err != nil {
-			return err
-		}
-		fmt.Println(configPath)
-		return nil
 	case "path":
-		fmt.Println(configPath)
+		fmt.Println(path)
 		return nil
 	case "validate":
-		cfg, err := config.Load(configPath)
+		cfg, err := config.Load(path)
 		if err != nil {
 			return err
 		}
@@ -289,72 +239,18 @@ func runConfigCommand(configPath string, args []string) error {
 		fmt.Println("config is valid")
 		return nil
 	case "sample":
-		return writeSampleConfig(configPath)
+		return writeSample(path)
 	default:
-		return fmt.Errorf("unknown config subcommand %q", args[0])
+		return fmt.Errorf("unknown config command %q", args[0])
 	}
 }
 
-func runDashboard(configPath, controlAddr string, args []string) error {
-	addr := dashboardAddr()
-	openBrowser := true
-
-	for _, a := range args {
-		if strings.HasPrefix(a, "--addr=") {
-			addr = strings.TrimSpace(strings.TrimPrefix(a, "--addr="))
-		}
-		if a == "--no-open" {
-			openBrowser = false
-		}
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		exe = strings.TrimSpace(exe)
-	}
-
-	workDir, err := config.EnsureAppSupportDir()
-	if err != nil {
-		return err
-	}
-
-	s := &dashboard.Server{
-		Addr:        addr,
-		ConfigPath:  configPath,
-		ControlAddr: controlAddr,
-		ExePath:     exe,
-		WorkDir:     workDir,
-	}
-
-	fmt.Printf("dashboard listening on http://%s\n", addr)
-	return s.Run(openBrowser)
-}
-
-func dashboardAddr() string {
-	if v := strings.TrimSpace(os.Getenv("PROCESSGOD_DASH_ADDR")); v != "" {
-		return v
-	}
-	return "127.0.0.1:51090"
-}
-
-func writeSampleConfig(path string) error {
-	sample := config.Config{Items: []config.Item{
-		{
-			ID:                 "sample-echo",
-			ProcessName:        "Sample Echo",
-			ExecPath:           "/bin/sh",
-			Args:               []string{"-lc", "while true; do date; sleep 5; done"},
-			Started:            true,
-			OnlyOpenOnce:       false,
-			NoWindow:           true,
-			CronExpression:     "0 1 * * *",
-			StopBeforeCronExec: true,
-		},
-	}}
+func writeSample(path string) error {
+	sample := config.Config{Items: []config.Item{{
+		ID: "sample-echo", ProcessName: "Sample Echo", ExecPath: "/bin/sh",
+		Args:          []string{"-lc", "while true; do date; sleep 5; done"},
+		StartupParams: "-lc 'while true; do date; sleep 5; done'", Started: true,
+	}}}
 	if err := config.Save(path, sample); err != nil {
 		return err
 	}
@@ -362,43 +258,53 @@ func writeSampleConfig(path string) error {
 	return nil
 }
 
-func printStatus(statuses []guardian.Status) {
-	if len(statuses) == 0 {
-		fmt.Println("no started items configured")
-		return
+func runServiceCommand(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: processgod-mac service <install|start|stop|status|uninstall> [--system]")
 	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tRUNNING\tPID\tLAST START\tLAST ERROR")
-	for _, s := range statuses {
-		lastStart := "-"
-		if !s.LastStart.IsZero() {
-			lastStart = s.LastStart.Format("2006-01-02 15:04:05")
+	system := false
+	for _, arg := range args[1:] {
+		if arg == "--system" {
+			system = true
 		}
-		errText := s.LastError
-		if errText == "" {
-			errText = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%t\t%d\t%s\t%s\n", s.ID, s.Name, s.Running, s.PID, lastStart, errText)
 	}
-	_ = w.Flush()
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	executable, _ = filepath.EvalSymlinks(executable)
+	root, err := runtimepaths.UserRoot()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "install":
+		return service.Install(executable, root, system)
+	case "start":
+		return service.Start(system)
+	case "stop":
+		return service.Stop(system)
+	case "uninstall":
+		return service.Uninstall(system)
+	case "status":
+		output, err := service.Status(system)
+		fmt.Print(output)
+		return err
+	default:
+		return fmt.Errorf("unknown service command %q", args[0])
+	}
 }
 
 func printUsage() {
-	fmt.Println(`processgod-mac - macOS process guardian
+	fmt.Println(`processgod-mac - ProcessGod native helper and CLI
 
 Usage:
-  processgod   (inside .app: opens tray app and starts guardian)
-  processgod daemon
-  processgod reload
-  processgod status
-  processgod logs <id> [--lines N]
-  processgod config <init|path|validate|sample>
-  processgod dashboard [--addr=127.0.0.1:51090] [--no-open]
-  processgod service <install|start|stop|status|uninstall> [--system]
-  processgod version
-
-Notes:
-  --system installs a LaunchDaemon in /Library/LaunchDaemons (boot startup, requires sudo).
-  Without --system, service commands target a user LaunchAgent.`)
+  processgod-mac daemon [--scope user|system]
+  processgod-mac status [--system]
+  processgod-mac logs [--system] [--lines N] <id>
+  processgod-mac restart [--system] <id>
+  processgod-mac pause|resume|reload [--system]
+  processgod-mac config <path|validate|sample> [--system]
+  processgod-mac service <install|start|stop|status|uninstall> [--system]
+  processgod-mac version`)
 }

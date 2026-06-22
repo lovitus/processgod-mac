@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lovitus/processgod-mac/internal/api"
 	"github.com/lovitus/processgod-mac/internal/config"
 	"github.com/lovitus/processgod-mac/internal/cron"
 	"github.com/lovitus/processgod-mac/internal/logbuf"
@@ -42,6 +43,8 @@ type Manager struct {
 	pathEnv      string
 	tickInterval time.Duration
 	logger       *log.Logger
+	paused       bool
+	notify       func(eventType, processID string)
 }
 
 type managed struct {
@@ -74,15 +77,14 @@ func (m *Manager) Apply(cfg config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cfg.Normalize()
+	pausedChanged := m.paused != cfg.GuardianPaused
+	m.paused = cfg.GuardianPaused
 
 	pathChanged := m.pathEnv != cfg.PathEnv
 	m.pathEnv = cfg.PathEnv
 
 	next := make(map[string]config.Item)
 	for _, it := range cfg.Items {
-		if !it.Started {
-			continue
-		}
 		it.Normalize()
 		next[it.ID] = it
 	}
@@ -100,13 +102,21 @@ func (m *Manager) Apply(cfg config.Config) error {
 			m.procs[id] = newManaged(it)
 			continue
 		}
+		enabledChanged := existing.item.Started != it.Started
 		if !sameRuntimeConfig(existing.item, it) {
 			m.stopLocked(existing)
-			existing.item = it
 			existing.startedOnce = false
 			existing.lastCronKey = ""
 			existing.lastError = ""
 			existing.cronSched = parseCron(it.CronExpression)
+		}
+		existing.item = it
+		if enabledChanged && it.Started {
+			existing.startedOnce = false
+			existing.lastCronKey = ""
+		}
+		if !it.Started {
+			m.stopLocked(existing)
 		}
 	}
 
@@ -117,8 +127,26 @@ func (m *Manager) Apply(cfg config.Config) error {
 			p.lastCronKey = ""
 		}
 	}
+	if m.paused && pausedChanged {
+		for _, p := range m.procs {
+			m.stopLocked(p)
+		}
+	}
+	m.emit("status.changed", "")
 
 	return nil
+}
+
+func (m *Manager) SetNotifier(notify func(eventType, processID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notify = notify
+}
+
+func (m *Manager) Paused() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
 }
 
 func (m *Manager) Run(stop <-chan struct{}) {
@@ -182,12 +210,22 @@ func (m *Manager) Logs(id string, lines int) (string, error) {
 	return p.logs.Render(lines), nil
 }
 
+func (m *Manager) LogSnapshot(id string, lines int) (api.LogSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.procs[id]
+	if !ok {
+		return api.LogSnapshot{}, fmt.Errorf("process id %q not found", id)
+	}
+	return p.logs.Snapshot(id, lines), nil
+}
+
 func (m *Manager) Restart(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	p, ok := m.procs[id]
-	if !ok {
+	if !ok || !p.item.Started {
 		return fmt.Errorf("process id %q is not enabled", id)
 	}
 	if p.running {
@@ -207,8 +245,14 @@ func (m *Manager) Restart(id string) error {
 func (m *Manager) tick(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.paused {
+		return
+	}
 
 	for _, p := range m.procs {
+		if !p.item.Started {
+			continue
+		}
 		m.handleCronLocked(p, now)
 
 		if p.running {
@@ -299,9 +343,10 @@ func (m *Manager) startLocked(p *managed, now time.Time) {
 	}
 
 	m.logger.Printf("started %s (%d)", p.item.ID, p.pid)
+	m.emit("status.changed", p.item.ID)
 
-	go m.consumeOutput(p.logs, stdout, false)
-	go m.consumeOutput(p.logs, stderr, true)
+	go m.consumeOutput(p.item.ID, p.logs, stdout, false)
+	go m.consumeOutput(p.item.ID, p.logs, stderr, true)
 	go m.waitForExit(p, cmd)
 }
 
@@ -389,17 +434,25 @@ func (m *Manager) waitForExit(p *managed, cmd *exec.Cmd) {
 	} else {
 		m.logger.Printf("process %s exited", p.item.ID)
 	}
+	m.emit("status.changed", p.item.ID)
 }
 
-func (m *Manager) consumeOutput(logs *logbuf.TaskLog, reader interface{ Read([]byte) (int, error) }, stderr bool) {
+func (m *Manager) consumeOutput(processID string, logs *logbuf.TaskLog, reader interface{ Read([]byte) (int, error) }, stderr bool) {
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		logs.Add(scanner.Text(), stderr)
+		m.emit("logs.changed", processID)
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
 		logs.Add("[output-reader-error] "+err.Error(), true)
+	}
+}
+
+func (m *Manager) emit(eventType, processID string) {
+	if m.notify != nil {
+		m.notify(eventType, processID)
 	}
 }
 

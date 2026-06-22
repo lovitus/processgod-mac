@@ -152,6 +152,53 @@ func TestRestartStartsNewProcess(t *testing.T) {
 	}
 }
 
+func TestPausedConfigStopsAndResumesProcesses(t *testing.T) {
+	m := New(log.New(os.Stdout, "", 0))
+	t.Cleanup(m.shutdown)
+	script := writeScript(t, "#!/bin/sh\nwhile true; do sleep 1; done\n")
+	cfg := config.Config{GuardianPaused: true, Items: []config.Item{{ID: "paused", ExecPath: script, Started: true}}}
+	if err := m.Apply(cfg); err != nil {
+		t.Fatalf("apply paused: %v", err)
+	}
+	m.tick(time.Now())
+	m.mu.Lock()
+	if m.procs["paused"].running {
+		m.mu.Unlock()
+		t.Fatalf("paused manager started a process")
+	}
+	m.mu.Unlock()
+
+	cfg.GuardianPaused = false
+	if err := m.Apply(cfg); err != nil {
+		t.Fatalf("apply resumed: %v", err)
+	}
+	m.tick(time.Now())
+	waitPID(t, m, "paused")
+}
+
+func TestDisablingTaskRetainsBoundedLogs(t *testing.T) {
+	m := New(log.New(os.Stdout, "", 0))
+	cfg := config.Config{Items: []config.Item{{ID: "retained", ExecPath: "/bin/echo", Started: true}}}
+	if err := m.Apply(cfg); err != nil {
+		t.Fatalf("apply enabled: %v", err)
+	}
+	m.mu.Lock()
+	m.procs["retained"].logs.Add("before disable", false)
+	m.mu.Unlock()
+
+	cfg.Items[0].Started = false
+	if err := m.Apply(cfg); err != nil {
+		t.Fatalf("apply disabled: %v", err)
+	}
+	snapshot, err := m.LogSnapshot("retained", 0)
+	if err != nil || snapshot.StandardOther.Kept != 1 || snapshot.StandardOther.Entries[0].Text != "before disable" {
+		t.Fatalf("logs were not retained: snapshot=%+v err=%v", snapshot, err)
+	}
+	if err := m.Restart("retained"); err == nil {
+		t.Fatal("disabled task should not restart")
+	}
+}
+
 func writeScript(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "run.sh")

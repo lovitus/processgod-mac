@@ -1,71 +1,82 @@
 # ProcessGodMac Operations
 
-## Install / Start / Stop
+## Paths
 
 User mode:
 
-```bash
-processgod-mac service install
-processgod-mac service status
-```
+- config: `~/Library/Application Support/ProcessGodMac/config.json`
+- socket: `~/Library/Application Support/ProcessGodMac/run/user.sock` (`0600`)
 
-System mode (pre-login):
+System mode:
 
-```bash
-sudo processgod-mac service install --system
-sudo processgod-mac service status --system
-```
+- config/state: `/Library/Application Support/ProcessGodMac/`
+- socket: `/var/run/processgod-mac/system.sock` (`0660`, root:admin)
 
-Stop/uninstall:
+There are no HTTP or TCP control listeners.
 
-```bash
-processgod-mac service stop
-processgod-mac service uninstall
-sudo processgod-mac service stop --system
-sudo processgod-mac service uninstall --system
-```
+## CLI
 
-## Runtime Commands
+Set a convenience variable:
 
 ```bash
-processgod-mac status
-processgod-mac reload
-processgod-mac logs <id> --lines 50
-processgod-mac dashboard
+PG=/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac
 ```
 
-The menu bar provides the same daily operations without CLI use: daemon start/stop, per-process enable/disable, restart, logs, edit, and delete.
+Commands:
 
-## Log Memory Limits
+```bash
+$PG version
+$PG status [--system]
+$PG logs [--system] [--lines N] <id>
+$PG restart [--system] <id>
+$PG pause [--system]
+$PG resume [--system]
+$PG reload [--system]
+$PG config path [--system]
+$PG config validate [--system]
+```
 
-- Logs are memory-only (no disk file logging for guarded tasks).
-- Per task: `error_warning=100` lines, `standard_other=20` lines.
-- Per stored line: max `4096` bytes (longer lines are truncated in memory).
-- `lines=` in dashboard/CLI only controls how many retained lines are displayed, not extra storage.
+`--lines` limits the returned view of the already-bounded buffers. It never increases daemon retention.
 
-## Config Location
+The `service` subcommands remain for compatibility with pre-native installations. Normal installations and mode switches use `SMAppService` from the native app.
 
-Default:
+## Health Checks
 
-- `~/Library/Application Support/ProcessGodMac/config.json`
+```bash
+$PG status
+lsof -U | grep processgod-mac
+launchctl print gui/$(id -u)/com.lovitus.processgod.mac.guardian.user
+sudo launchctl print system/com.lovitus.processgod.mac.guardian.system
+```
 
-Config includes:
-
-- `pathEnv`: daemon PATH for command lookup
-- `items[]`: guarded process items
+`status` reports task state, PID, last start, and current error. A damaged config does not prevent IPC startup: the app connects in degraded mode so the user can repair or import configuration.
 
 ## Troubleshooting
 
-1. Dashboard unavailable:
+### No menu bar icon
 
-- Ensure tray/daemon is running.
-- Check `processgod-mac status`.
+Confirm macOS 15+, arm64, and that the app executable launches:
 
-2. Command not found:
+```bash
+file /Applications/ProcessGodMac.app/Contents/MacOS/ProcessGodMac
+open /Applications/ProcessGodMac.app
+```
 
-- Update PATH in dashboard PATH editor.
-- Or use absolute executable path.
+For a release artifact, verify:
 
-3. Need pre-login startup:
+```bash
+codesign --verify --deep --strict /Applications/ProcessGodMac.app
+spctl --assess --type execute --verbose=2 /Applications/ProcessGodMac.app
+```
 
-- Install system mode with `--system` and `sudo`.
+### Command not found
+
+Modify Command PATH in native Settings, or select an absolute executable. Verify the task working directory and environment table.
+
+### System service awaiting approval
+
+Open **System Settings > General > Login Items & Extensions**, approve ProcessGodMac, then select System mode again. User mode remains active while approval is pending.
+
+### Repair config
+
+The daemon is the only config writer. Prefer the native editor. For manual recovery, stop the relevant service, repair a backup, run `config validate`, then restart it. Atomic writes use a temporary file, `fsync`, and rename.

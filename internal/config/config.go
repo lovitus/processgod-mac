@@ -8,17 +8,24 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/lovitus/processgod-mac/internal/api"
+	"github.com/lovitus/processgod-mac/internal/cron"
 )
 
 const (
-	appName             = "ProcessGodMac"
-	defaultPathEnvValue = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Users/fanli/.cargo/bin"
+	appName              = "ProcessGodMac"
+	CurrentSchemaVersion = 2
+	defaultPathEnvValue  = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
 )
 
 // Config is the root config model.
 type Config struct {
-	PathEnv string `json:"pathEnv,omitempty"`
-	Items   []Item `json:"items"`
+	SchemaVersion  int    `json:"schemaVersion,omitempty"`
+	Revision       uint64 `json:"revision,omitempty"`
+	GuardianPaused bool   `json:"guardianPaused,omitempty"`
+	PathEnv        string `json:"pathEnv,omitempty"`
+	Items          []Item `json:"items"`
 }
 
 // Item defines a single guarded process.
@@ -70,13 +77,6 @@ func ConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
-func ControlAddress() string {
-	if override := strings.TrimSpace(os.Getenv("PROCESSGOD_ADDR")); override != "" {
-		return override
-	}
-	return "127.0.0.1:51089"
-}
-
 func EnsureDefaultConfig() (string, error) {
 	path, err := ConfigPath()
 	if err != nil {
@@ -89,7 +89,7 @@ func EnsureDefaultConfig() (string, error) {
 		return "", fmt.Errorf("stat config: %w", err)
 	}
 
-	cfg := Config{PathEnv: DefaultPathEnv(), Items: []Item{}}
+	cfg := Config{SchemaVersion: CurrentSchemaVersion, Revision: 1, PathEnv: DefaultPathEnv(), Items: []Item{}}
 	if err := Save(path, cfg); err != nil {
 		return "", err
 	}
@@ -104,7 +104,9 @@ func Load(path string) (Config, error) {
 
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
-		return Config{Items: []Item{}}, nil
+		cfg := Config{Items: []Item{}}
+		cfg.Normalize()
+		return cfg, nil
 	}
 
 	// Accept legacy top-level array.
@@ -132,24 +134,101 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temporary config: %w", err)
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temporary config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary config: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
 	}
 	return nil
 }
 
 func (c *Config) Normalize() {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
+	if c.Revision == 0 {
+		c.Revision = 1
+	}
 	c.PathEnv = strings.TrimSpace(c.PathEnv)
 	if c.PathEnv == "" {
 		c.PathEnv = DefaultPathEnv()
+	}
+	if c.Items == nil {
+		c.Items = []Item{}
 	}
 	for i := range c.Items {
 		c.Items[i].Normalize()
 	}
 }
 
+func (c Config) Snapshot() api.ConfigSnapshot {
+	c.Normalize()
+	processes := make([]api.ProcessDefinition, 0, len(c.Items))
+	for _, item := range c.Items {
+		processes = append(processes, item.Definition())
+	}
+	return api.ConfigSnapshot{
+		SchemaVersion:  c.SchemaVersion,
+		Revision:       c.Revision,
+		PathEnv:        c.PathEnv,
+		GuardianPaused: c.GuardianPaused,
+		Processes:      processes,
+	}
+}
+
+func FromSnapshot(snapshot api.ConfigSnapshot) (Config, error) {
+	cfg := Config{
+		SchemaVersion:  CurrentSchemaVersion,
+		Revision:       snapshot.Revision,
+		GuardianPaused: snapshot.GuardianPaused,
+		PathEnv:        snapshot.PathEnv,
+		Items:          make([]Item, 0, len(snapshot.Processes)),
+	}
+	for _, definition := range snapshot.Processes {
+		item, err := ItemFromDefinition(definition)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Items = append(cfg.Items, item)
+	}
+	cfg.Normalize()
+	if err := Validate(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 // DefaultPathEnv returns the PATH used by daemon and child processes.
 func DefaultPathEnv() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return defaultPathEnvValue + ":" + filepath.Join(home, ".cargo", "bin")
+	}
 	return defaultPathEnvValue
 }
 
@@ -190,7 +269,77 @@ func (i *Item) Normalize() {
 	}
 }
 
+func (i Item) Definition() api.ProcessDefinition {
+	i.Normalize()
+	mode := api.ModeGuard
+	switch {
+	case i.OnlyOpenOnce:
+		mode = api.ModeOnce
+	case i.CronExpression != "" && i.StopBeforeCronExec:
+		mode = api.ModeCronRestart
+	case i.CronExpression != "":
+		mode = api.ModeCronRun
+	}
+	return api.ProcessDefinition{
+		ID:               i.ID,
+		Name:             i.ProcessName,
+		Command:          i.ExecPath,
+		Arguments:        i.StartupParams,
+		WorkingDirectory: i.WorkingDir,
+		Environment:      i.Env,
+		Mode:             mode,
+		CronExpression:   i.CronExpression,
+		Enabled:          i.Started,
+	}
+}
+
+func ItemFromDefinition(definition api.ProcessDefinition) (Item, error) {
+	item := Item{
+		ID:            strings.TrimSpace(definition.ID),
+		ProcessName:   strings.TrimSpace(definition.Name),
+		ExecPath:      strings.TrimSpace(definition.Command),
+		StartupParams: strings.TrimSpace(definition.Arguments),
+		WorkingDir:    strings.TrimSpace(definition.WorkingDirectory),
+		Env:           definition.Environment,
+		Started:       definition.Enabled,
+		NoWindow:      true,
+	}
+	if item.ID == "" {
+		item.ID = sanitizeID(item.ProcessName)
+	}
+	if item.ID == "" || item.ID == "task" && item.ProcessName == "" {
+		item.ID = sanitizeID(filepath.Base(item.ExecPath))
+	}
+	switch definition.Mode {
+	case api.ModeGuard, "":
+		item.StopBeforeCronExec = true
+	case api.ModeOnce:
+		item.OnlyOpenOnce = true
+	case api.ModeCronRun:
+		item.CronExpression = strings.TrimSpace(definition.CronExpression)
+	case api.ModeCronRestart:
+		item.CronExpression = strings.TrimSpace(definition.CronExpression)
+		item.StopBeforeCronExec = true
+	default:
+		return Item{}, fmt.Errorf("invalid process mode %q", definition.Mode)
+	}
+	item.Normalize()
+	if item.ID == "" {
+		return Item{}, fmt.Errorf("process id is required")
+	}
+	if item.ExecPath == "" {
+		return Item{}, fmt.Errorf("process command is required")
+	}
+	if (definition.Mode == api.ModeCronRun || definition.Mode == api.ModeCronRestart) && item.CronExpression == "" {
+		return Item{}, fmt.Errorf("cron expression is required")
+	}
+	return item, nil
+}
+
 func Validate(cfg Config) error {
+	if cfg.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("unsupported schemaVersion %d (maximum %d)", cfg.SchemaVersion, CurrentSchemaVersion)
+	}
 	seen := make(map[string]struct{}, len(cfg.Items))
 	for idx := range cfg.Items {
 		it := cfg.Items[idx]
@@ -204,6 +353,11 @@ func Validate(cfg Config) error {
 		if it.Started {
 			if strings.TrimSpace(it.ExecPath) == "" {
 				return fmt.Errorf("items[%d]: execPath is required when started=true", idx)
+			}
+		}
+		if strings.TrimSpace(it.CronExpression) != "" {
+			if _, err := cron.Parse(it.CronExpression); err != nil {
+				return fmt.Errorf("items[%d]: invalid cron expression: %w", idx, err)
 			}
 		}
 	}

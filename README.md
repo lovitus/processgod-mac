@@ -1,166 +1,87 @@
-# ProcessGod macOS
+# ProcessGodMac
 
-macOS-native rewrite of `lovitus/processgod`.
+Native macOS process guardian derived from [lovitus/processgod](https://github.com/lovitus/processgod).
 
-This version is implemented in Go and focuses on service-style process guarding on macOS:
+`v0.4.0-dev` replaces the former tray/web UI with a Swift 6 menu bar app while retaining a Go guardian daemon and compatible configuration storage.
 
-- launchd service mode (user LaunchAgent and system LaunchDaemon)
-- boot startup support in `--system` mode (before user login)
-- process auto-restart guard
-- cron-triggered restart/run behavior
-- in-memory log ring cache per guarded process
-- CLI status/log inspection and live config reload
+## Requirements
 
-## Build
+- macOS 15 or newer
+- Apple Silicon (`arm64`)
+- No browser dashboard and no TCP ports `51089`/`51090`
 
-```bash
-mkdir -p /tmp/gocache /tmp/gomodcache
-GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go build -o dist/processgod-mac ./cmd/processgod
-```
+## Features
 
-## Run Daemon
+- Native `NSStatusItem` popover for status, enable/disable, restart, log preview, and pause/resume all
+- SwiftUI process manager with command picker, arguments, working directory, environment variables, mode, and Cron validation
+- User LaunchAgent after login or administrator-approved system LaunchDaemon before login
+- Always Guard, Start Once, Cron Run, and Cron Restart behavior
+- Persistent global pause without unloading launchd
+- English and Simplified Chinese UI, following the system or a manual override
+- Go CLI and newline-delimited JSON IPC over authenticated Unix sockets
+- Atomic revisioned configuration with legacy field preservation
+- Strictly bounded, memory-only task logs
 
-```bash
-./dist/processgod-mac daemon
-```
+## Install
 
-If you open `ProcessGodMac.app` from Finder:
+1. Open `processgod-mac-0.4.0-dev.dmg`.
+2. Drag `ProcessGodMac.app` to Applications.
+3. Open ProcessGodMac. Its icon appears in the menu bar.
 
-- a menu bar tray icon (`PG`) is created
-- guardian is auto-started
-- the app stays in the menu bar and does not open a browser on startup
-- every configured process appears in the tray with status, PID, enable/disable, restart, logs, edit, and delete actions
-- startup mode can be changed from the tray (`user` after login / `system` before login)
-- `Add Process` and `Manage Processes` open the focused manager only when requested
+A notarized release does not require `xattr`. Fresh installs automatically register the user service. Closing the Swift app does not stop the guardian.
 
-## Service Mode (launchd)
+Use **Settings > Before login (System)** for pre-login startup. macOS may require approval in **System Settings > General > Login Items & Extensions**. The user daemon remains active until the system daemon is approved, imported, and healthy.
 
-User mode (starts at user login):
+## Log Limits
 
-```bash
-./dist/processgod-mac service install
-./dist/processgod-mac service status
-```
+Each enabled task owns exactly two in-memory ring buffers:
 
-System mode (starts on boot, requires sudo):
+| Category | Retained lines |
+| --- | ---: |
+| Error / warning | 100 |
+| Standard / other | 20 |
 
-```bash
-sudo ./dist/processgod-mac service install --system
-sudo ./dist/processgod-mac service status --system
-```
+Each stored line is capped at 4096 bytes. Therefore retained text is bounded to at most 491,520 bytes per task, plus fixed Go object/string overhead. The UI and CLI read these same buffers; there is no larger hidden cache and no task log file.
 
-System mode is the one that starts before login screen.
+Sequence values are signed 64-bit counters. At the theoretical maximum (`9,223,372,036,854,775,807`) the counter restarts at 1; this does not allocate memory or change ring capacities.
 
-Other operations:
+## Build And Test
 
 ```bash
-./dist/processgod-mac service start [--system]
-./dist/processgod-mac service stop [--system]
-./dist/processgod-mac service uninstall [--system]
+make test
+make build VERSION=0.4.0 CHANNEL=dev
 ```
 
-## Config
+The Xcode project is at `macos/ProcessGodMac.xcodeproj`. The app target builds and embeds an `arm64` Go helper at `Contents/MacOS/processgod-mac`.
 
-Config file path:
+## CLI
 
 ```bash
-./dist/processgod-mac config path
+/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac status
+/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac logs <task-id>
+/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac restart <task-id>
+/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac pause
+/Applications/ProcessGodMac.app/Contents/MacOS/processgod-mac resume
 ```
 
-Write a sample:
+Add `--system` to connect to the system daemon.
 
-```bash
-./dist/processgod-mac config sample
-```
-
-Validate config:
-
-```bash
-./dist/processgod-mac config validate
-```
-
-Default path is `~/Library/Application Support/ProcessGodMac/config.json`.
-
-For sandboxed/dev environments, you can override with:
-
-```bash
-export PROCESSGOD_HOME=/path/to/runtime-dir
-```
-
-## Runtime Commands
-
-```bash
-./dist/processgod-mac reload
-./dist/processgod-mac status
-./dist/processgod-mac logs <id> --lines 200
-./dist/processgod-mac dashboard
-```
-
-Additional docs:
+## Documentation
 
 - [User Guide](docs/USER_GUIDE.md)
 - [Operations](docs/OPERATIONS.md)
+- [Architecture and Security](docs/ARCHITECTURE.md)
+- [IPC Protocol](docs/IPC.md)
+- [Migration](docs/MIGRATION.md)
+- [Release Process](docs/RELEASE.md)
 
-The process manager follows the original ProcessGuard workflow:
-
-- process list on the left and one focused add/edit inspector on the right
-- English and Simplified Chinese UI with browser detection and a persistent language switcher
-- row-level enable/disable, restart, logs, edit, and delete actions
-- behavior selector for Always Guard, Start Once, Cron Run, and Cron Restart
-- start/stop daemon
-- reload config
-- command-name support via PATH lookup (e.g. `ping`, `node`, `java`)
-- advanced fields remain available in a collapsible section
-- responsive desktop and mobile layout
-
-Log retention policy (memory-only, no disk log files):
-
-- each task has 2 rotating buffers
-- `error_warning` keeps latest `100` lines
-- `standard_other` keeps latest `20` lines
-- each stored line is capped to `4096` bytes (`line_max_bytes`)
-- logs include line sequence numbers (`E#<n>` / `S#<n>`) and buffer size summary
-- old lines rotate out in memory only
-- effective per-task log cache is bounded to about `120 * 4096` bytes of text (+ Go object overhead), not unbounded growth
-
-## Cron Semantics
-
-Equivalent behavior to original ProcessGuard:
-
-- `onlyOpenOnce=true`: process starts once and is not restarted after exit.
-- `cronExpression` set and `stopBeforeCronExec=false`: cron runs task when trigger matches; if process exits, it stays stopped until next cron trigger.
-- `cronExpression` set and `stopBeforeCronExec=true`: process is guarded continuously and cron trigger forces restart (kill+start) once per matching minute.
-
-## Packaging DMG
+## Release
 
 ```bash
-./scripts/package-dmg.sh 0.1.0 dev
+ASC_KEY_ID=... \
+ASC_ISSUER_ID=... \
+ASC_KEY_PATH=/secure/path/AuthKey_XXXX.p8 \
+./scripts/package-dmg.sh 0.4.0 dev
 ```
 
-Output naming format:
-
-- `processgod-mac-<version>-<channel>.dmg`
-- example: `processgod-mac-0.1.0-dev.dmg`
-- the DMG contains an ad-hoc signed app and an `Applications` shortcut for drag-to-install
-
-## Config Schema
-
-```json
-{
-  "items": [
-    {
-      "id": "sample-echo",
-      "processName": "Sample Echo",
-      "execPath": "/bin/sh",
-      "args": ["-lc", "while true; do date; sleep 5; done"],
-      "workingDir": "/tmp",
-      "env": { "JAVA_HOME": "/opt/homebrew/opt/openjdk" },
-      "started": true,
-      "onlyOpenOnce": false,
-      "noWindow": true,
-      "cronExpression": "0 1 * * *",
-      "stopBeforeCronExec": true
-    }
-  ]
-}
-```
+The script tests, archives, Developer ID signs, exports, notarizes, staples, validates, creates `dist/processgod-mac-0.4.0-dev.dmg`, and writes its SHA-256 file.

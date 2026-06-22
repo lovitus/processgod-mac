@@ -5,15 +5,21 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/lovitus/processgod-mac/internal/api"
 )
 
 type Entry struct {
-	Seq  int64
-	Text string
-	Err  bool
+	Seq       int64
+	Timestamp time.Time
+	Source    string
+	Text      string
+	Err       bool
 }
 
-const maxStoredLineBytes = 4096
+const MaxStoredLineBytes = 4096
 
 type entryRing struct {
 	buf      []Entry
@@ -72,7 +78,7 @@ func NewTaskLog(errWarnCapacity, stdCapacity int) *TaskLog {
 	}
 }
 
-func (t *TaskLog) Add(line string, stderr bool) {
+func (t *TaskLog) Add(line string, stderr bool) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.total == math.MaxInt64 {
@@ -81,13 +87,36 @@ func (t *TaskLog) Add(line string, stderr bool) {
 	}
 	t.total++
 	raw := line
-	e := Entry{Seq: t.total, Text: truncateStoredLine(raw)}
+	source := "stdout"
+	if stderr {
+		source = "stderr"
+	}
+	e := Entry{Seq: t.total, Timestamp: time.Now().UTC(), Source: source, Text: truncateStoredLine(raw)}
 	if stderr || isErrWarnLine(raw) {
 		e.Err = true
 		t.err.add(e)
-		return
+		return e.Seq
 	}
 	t.std.add(e)
+	return e.Seq
+}
+
+func (t *TaskLog) Snapshot(processID string, maxPerSection int) api.LogSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	errEntries := t.err.entries()
+	stdEntries := t.std.entries()
+	if maxPerSection > 0 {
+		errEntries = trimLastEntries(errEntries, maxPerSection)
+		stdEntries = trimLastEntries(stdEntries, maxPerSection)
+	}
+	return api.LogSnapshot{
+		ProcessID:     processID,
+		TotalSeen:     t.total,
+		LineMaxBytes:  MaxStoredLineBytes,
+		ErrorWarning:  api.LogBuffer{Capacity: t.err.cap(), Kept: t.err.len(), Entries: apiEntries(errEntries, "errorWarning")},
+		StandardOther: api.LogBuffer{Capacity: t.std.cap(), Kept: t.std.len(), Entries: apiEntries(stdEntries, "standardOther")},
+	}
 }
 
 func (t *TaskLog) Render(maxPerSection int) string {
@@ -107,7 +136,7 @@ func (t *TaskLog) Render(maxPerSection int) string {
 	b.WriteString(fmt.Sprintf("# error_warning: kept %d/%d lines\n", t.err.len(), t.err.cap()))
 	b.WriteString(fmt.Sprintf("# standard_other: kept %d/%d lines\n", t.std.len(), t.std.cap()))
 	b.WriteString(fmt.Sprintf("# total_seen_lines: %d\n", t.total))
-	b.WriteString(fmt.Sprintf("# line_max_bytes: %d\n", maxStoredLineBytes))
+	b.WriteString(fmt.Sprintf("# line_max_bytes: %d\n", MaxStoredLineBytes))
 	if requested > 0 {
 		b.WriteString(fmt.Sprintf("# requested_lines_per_section: %d\n", requested))
 	}
@@ -126,6 +155,20 @@ func (t *TaskLog) Render(maxPerSection int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func apiEntries(entries []Entry, category string) []api.LogEntry {
+	out := make([]api.LogEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, api.LogEntry{
+			Sequence:  entry.Seq,
+			Timestamp: entry.Timestamp,
+			Source:    entry.Source,
+			Category:  category,
+			Text:      entry.Text,
+		})
+	}
+	return out
+}
+
 func trimLastEntries(in []Entry, n int) []Entry {
 	if n <= 0 || len(in) <= n {
 		return in
@@ -142,16 +185,20 @@ func isErrWarnLine(line string) bool {
 }
 
 func truncateStoredLine(line string) string {
-	if len(line) <= maxStoredLineBytes {
+	if len(line) <= MaxStoredLineBytes {
 		return line
 	}
-	suffix := fmt.Sprintf(" ... [truncated %d bytes]", len(line)-maxStoredLineBytes)
-	prefixLen := maxStoredLineBytes
-	if len(suffix) < maxStoredLineBytes {
-		prefixLen = maxStoredLineBytes - len(suffix)
+	suffix := fmt.Sprintf(" ... [truncated %d bytes]", len(line)-MaxStoredLineBytes)
+	prefixLen := MaxStoredLineBytes
+	if len(suffix) < MaxStoredLineBytes {
+		prefixLen = MaxStoredLineBytes - len(suffix)
 	}
 	if prefixLen < 0 {
 		prefixLen = 0
 	}
-	return line[:prefixLen] + suffix
+	prefix := line[:prefixLen]
+	for len(prefix) > 0 && !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix + suffix
 }

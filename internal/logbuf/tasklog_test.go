@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestTaskLogCapacityAndRender(t *testing.T) {
@@ -51,7 +52,7 @@ func TestTaskLogSeqRolloverStaysPositive(t *testing.T) {
 
 func TestTaskLogTruncatesStoredLineBytes(t *testing.T) {
 	l := NewTaskLog(3, 3)
-	long := strings.Repeat("a", maxStoredLineBytes+500) + "error-end"
+	long := strings.Repeat("a", MaxStoredLineBytes+500) + "error-end"
 
 	l.Add(long, false)
 	out := l.Render(0)
@@ -73,7 +74,36 @@ func TestTaskLogTruncatesStoredLineBytes(t *testing.T) {
 	if storedLine == "" {
 		t.Fatalf("missing stored line in output: %s", out)
 	}
-	if len(storedLine) > maxStoredLineBytes {
-		t.Fatalf("stored line exceeds max bytes: got=%d want<=%d", len(storedLine), maxStoredLineBytes)
+	if len(storedLine) > MaxStoredLineBytes {
+		t.Fatalf("stored line exceeds max bytes: got=%d want<=%d", len(storedLine), MaxStoredLineBytes)
+	}
+}
+
+func TestTaskLogTruncationKeepsValidUTF8(t *testing.T) {
+	l := NewTaskLog(1, 1)
+	l.Add(strings.Repeat("界", MaxStoredLineBytes), false)
+	snapshot := l.Snapshot("utf8", 0)
+	text := snapshot.StandardOther.Entries[0].Text
+	if !utf8.ValidString(text) || len(text) > MaxStoredLineBytes {
+		t.Fatalf("invalid bounded UTF-8 log line: bytes=%d valid=%v", len(text), utf8.ValidString(text))
+	}
+}
+
+func TestTaskLogStructuredSnapshot(t *testing.T) {
+	l := NewTaskLog(2, 1)
+	l.Add("one", false)
+	l.Add("warning two", false)
+	l.Add("stderr three", true)
+	l.Add("four", false)
+
+	snapshot := l.Snapshot("job", 0)
+	if snapshot.ProcessID != "job" || snapshot.TotalSeen != 4 || snapshot.LineMaxBytes != MaxStoredLineBytes {
+		t.Fatalf("unexpected metadata: %+v", snapshot)
+	}
+	if snapshot.ErrorWarning.Kept != 2 || snapshot.StandardOther.Kept != 1 {
+		t.Fatalf("unexpected capacities: %+v", snapshot)
+	}
+	if got := snapshot.ErrorWarning.Entries[1]; got.Source != "stderr" || got.Category != "errorWarning" || got.Timestamp.IsZero() {
+		t.Fatalf("unexpected structured entry: %+v", got)
 	}
 }
