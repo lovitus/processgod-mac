@@ -48,6 +48,10 @@ final class ServiceController {
         try finalizeLegacyMigration(.user)
     }
 
+    static func shouldFinalizeLegacyMigration(hasPendingMigration: Bool, legacyPlistExists: Bool) -> Bool {
+        hasPendingMigration || legacyPlistExists
+    }
+
     func rollbackStartupMigration() async {
         if userService.status != .notRegistered { try? await unregister(userService) }
         try? restoreLegacyMigration(.user)
@@ -201,11 +205,21 @@ final class ServiceController {
     }
 
     private func finalizeLegacyMigration(_ selection: ServiceSelection) throws {
-        guard let path = pendingLegacyMigrations[selection] else { return }
+        let pendingPath = pendingLegacyMigrations[selection]
+        let path = pendingPath ?? legacyPlistPath(selection)
+        let legacyExists = FileManager.default.fileExists(atPath: path)
+        guard Self.shouldFinalizeLegacyMigration(hasPendingMigration: pendingPath != nil, legacyPlistExists: legacyExists) else {
+            pendingLegacyMigrations.removeValue(forKey: selection)
+            return
+        }
         if selection == .system {
+            try runAdministratorHelper(["legacy-service", "stop", "--system"], allowFailure: true)
             try runAdministratorCommand("/bin/rm -f \(shellQuote(path))")
-        } else if FileManager.default.fileExists(atPath: path) {
-            try FileManager.default.removeItem(atPath: path)
+        } else {
+            try runHelper(["legacy-service", "stop"], allowFailure: true)
+            if FileManager.default.fileExists(atPath: path) {
+                try FileManager.default.removeItem(atPath: path)
+            }
         }
         pendingLegacyMigrations.removeValue(forKey: selection)
     }

@@ -193,6 +193,9 @@ final class ModelTests: XCTestCase {
             selection: .user,
             error: RPCErrorPayload(code: "not_bootstrapped", message: "system daemon has no owner")
         ))
+        XCTAssertTrue(ServiceController.shouldFinalizeLegacyMigration(hasPendingMigration: false, legacyPlistExists: true))
+        XCTAssertTrue(ServiceController.shouldFinalizeLegacyMigration(hasPendingMigration: true, legacyPlistExists: false))
+        XCTAssertFalse(ServiceController.shouldFinalizeLegacyMigration(hasPendingMigration: false, legacyPlistExists: false))
     }
 
     func testErrorCodeLocalizationInBothLanguages() {
